@@ -6,14 +6,20 @@ import platform
 from pathlib import Path
 import base64
 from invoke import task
-import versioneer
+import shutil
 
 _IS_WINDOWS = platform.system() == 'Windows'
 _PY_DEFAULT_VERSION = '3.9'
 
-if not Path('versioneer.py').exists():
+if not Path('LICENSE').exists():
     sys.exit('Error: Run the command from the root folder (the directory '
              'with the README.md and setup.py files)')
+
+
+def _print_psycopg_msg():
+    print("Failed to run the command 'invoke setup'. Have issues "
+          "installing the psycopg2 package? Remove it from "
+          "setup.py then try again.")
 
 
 @task
@@ -50,7 +56,12 @@ def setup(c, doc=False, version=None):
         cmds.pop(0)
 
     c.run(f'conda create --name {env_name} python={version} --yes')
-    c.run(' && '.join(cmds))
+
+    try:
+        c.run(' && '.join(cmds))
+    except Exception:
+        _print_psycopg_msg()
+        raise
 
     if doc:
         cmds = [
@@ -73,7 +84,11 @@ def setup_pip(c, doc=False):
     """[pip] Setup dev environment
     """
     # install ploomber in editable mode and include development dependencies
-    c.run('pip install --editable ".[dev]"')
+    try:
+        c.run('pip install --editable ".[dev]"')
+    except Exception:
+        _print_psycopg_msg()
+        raise
 
     # install sample package required in some tests
     c.run('pip install --editable tests/assets/test_pkg')
@@ -98,6 +113,7 @@ def docs(c):
 def new(c):
     """Release a new version
     """
+    from pkgmt import versioneer
     versioneer.version(project_root='.', tag=True)
 
 
@@ -105,7 +121,9 @@ def new(c):
 def upload(c, tag, production=True):
     """Upload to PyPI
     """
+    from pkgmt import versioneer
     versioneer.upload(tag, production=production)
+    print('Remember to update binder-env!')
 
 
 @task
@@ -115,3 +133,35 @@ def test(c, report=False):
     c.run('pytest --cov ploomber ' + ('--cov-report html' if report else ''),
           pty=True)
     c.run('flake8')
+
+
+@task
+def install_git_hook(c, force=False):
+    """Installs pre-push git hook
+    """
+    path = Path('.git/hooks/pre-push')
+    hook_exists = path.is_file()
+
+    if hook_exists:
+        if force:
+            path.unlink()
+        else:
+            sys.exit('Error: pre-push hook already exists. '
+                     'Run: "invoke install-git-hook -f" to force overwrite.')
+
+    shutil.copy('.githooks/pre-push', '.git/hooks')
+    print(f'pre-push hook installed at {str(path)}')
+
+
+@task
+def uninstall_git_hook(c):
+    """Uninstalls pre-push git hook
+    """
+    path = Path('.git/hooks/pre-push')
+    hook_exists = path.is_file()
+
+    if hook_exists:
+        path.unlink()
+        print(f'Deleted {str(path)}.')
+    else:
+        print('Hook doesn\'t exist, nothing to delete.')

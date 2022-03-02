@@ -1,4 +1,6 @@
+import os
 import inspect
+import importlib
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -9,6 +11,8 @@ import pytest
 from ploomber.util import dotted_path
 from ploomber.exceptions import SpecValidationError
 from ploomber.sources.inspect import getfile
+from ploomber.util.dotted_path import (create_intermediate_modules,
+                                       dotted_path_exists)
 
 
 @pytest.mark.parametrize('spec', [
@@ -402,3 +406,147 @@ def fn(some_arg):
     expected = ("Got duplicated arguments ('some_arg') when calling "
                 "dotted path 'some_module.fn'. Overriding values...")
     assert record[0].message.args[0] == expected
+
+
+@pytest.mark.parametrize('path, err_msg', [
+    [
+        'ast.another.fn',
+        ("An error occured when trying to import "
+         "dotted path 'ast.another.fn': No module named "
+         "'ast.another'; 'ast' is not a package"),
+    ],
+    [
+        'something.another',
+        ("An error occured when trying to import "
+         "dotted path 'something.another': No module named 'something'"),
+    ],
+    [
+        'my_module.my_function',
+        ("An error occured when trying to import "
+         "dotted path 'my_module.my_function': No module named 'something'"),
+    ],
+],
+                         ids=[
+                             'module-sub-not-found',
+                             'module-root-not-found',
+                             'indirect-module-due-import-not-found',
+                         ])
+def test_load_dotted_path_if_import_fails(path, err_msg, tmp_directory,
+                                          tmp_imports):
+
+    Path('my_module.py').write_text('import something')
+
+    mod_name = path.split('.')[0]
+    spec = importlib.util.find_spec(mod_name)
+
+    if spec:
+        err_msg = err_msg + f' (loaded {mod_name!r} from {spec.origin!r})'
+
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        dotted_path.load_dotted_path(path)
+
+    assert str(excinfo.value) == err_msg
+
+
+@pytest.mark.parametrize('path, err_msg, root', [
+    [
+        'my_module.func',
+        ("Could not get 'func' from module 'my_module' "
+         "(loaded 'my_module' from {}). Ensure it is defined in such module"),
+        'my_module.py',
+    ],
+    [
+        'another.sub.func',
+        ("Could not get 'func' from module 'another.sub' "
+         "(loaded 'another.sub' from {}). Ensure it is defined in such module"
+         ),
+        Path('another', 'sub.py'),
+    ],
+],
+                         ids=[
+                             'simple',
+                             'with-submodule',
+                         ])
+def test_load_dotted_path_if_attribute_not_found(path, err_msg, root,
+                                                 tmp_directory, tmp_imports):
+    Path('my_module.py').write_text('')
+
+    Path('another').mkdir()
+    Path('another', 'sub.py').touch()
+
+    with pytest.raises(AttributeError) as excinfo:
+        dotted_path.load_dotted_path(path)
+
+    expected = err_msg.format(repr(os.path.abspath(root)))
+    assert str(excinfo.value) == expected
+
+
+def test_create_intermediate_modules_error_if_exists(tmp_directory,
+                                                     tmp_imports):
+    Path('my_functions.py').write_text("""
+def my_function():
+    pass
+""")
+
+    with pytest.raises(ValueError) as excinfo:
+        create_intermediate_modules(['my_functions', 'my_function'])
+
+    expected = "Module 'my_functions.my_function' already exists"
+    assert str(excinfo.value) == expected
+
+
+def test_create_intermediate_modules(tmp_directory):
+
+    modules_and_function = ["sweet", "home", "alabama"]
+
+    create_intermediate_modules(modules_and_function)
+
+    assert Path(tmp_directory, "sweet").exists()
+    assert Path(tmp_directory, "sweet", "__init__.py").exists()
+    assert Path(tmp_directory, "sweet", "home").exists()
+    assert Path(tmp_directory, "sweet", "home", "__init__.py").exists()
+    assert Path(tmp_directory, "sweet", "home", "alabama.py").exists()
+
+
+def test_test_create_intermediate_modules_existing_package(
+        backup_test_pkg, tmp_directory):
+    modules_and_function = [
+        'test_pkg',
+        'new_module',
+        'another',
+    ]
+    create_intermediate_modules(modules_and_function)
+
+    assert Path(backup_test_pkg, 'new_module', 'another.py').is_file()
+
+
+def test_create_intermediate_modules_single_namespace(tmp_directory):
+    Path('namespace_pkg').mkdir()
+
+    create_intermediate_modules(['namespace_pkg', 'another'])
+
+    assert Path('namespace_pkg', 'another.py').is_file()
+
+
+def test_create_intermediate_modules_single(tmp_directory):
+    create_intermediate_modules(['something'])
+
+    assert Path('something.py').exists()
+
+
+@pytest.mark.parametrize('dotted_path, expected', [
+    ['some.package.stuff.function', False],
+    ['some.things.non_existent', False],
+    ['some.package.a_function', True],
+])
+def test_dotted_path_exists(tmp_directory, tmp_imports, dotted_path, expected):
+    dir_ = Path('some', 'package')
+    dir_.mkdir(parents=True)
+    (dir_ / 'stuff.py').touch()
+    Path('some', '__init__.py').touch()
+    Path('some', 'package', '__init__.py').write_text("""
+def a_function():
+    pass
+""")
+
+    assert bool(dotted_path_exists(dotted_path)) is expected

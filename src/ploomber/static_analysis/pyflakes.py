@@ -25,8 +25,11 @@ _ERRORS = (
     BreakOutsideLoop,
 )
 
-_CELL_IS_IPYTHON_CELL_MAGIC_REGEX = r'^%{2}[a-zA-Z]+'
-_LINE_IS_IPYTHON_LINE_MAGIC_REGEX = r'^%{1}[a-zA-Z]+'
+_IS_IPYTHON_CELL_MAGIC = r'^\s*%{2}[a-zA-Z]+'
+_IS_IPYTHON_LINE_MAGIC = r'^\s*%{1}[a-zA-Z]+'
+_IS_INLINE_SHELL = r'^\s*!{1}.+'
+
+HAS_INLINE_PYTHON = {'%%capture', '%%timeit', '%%time', '%time', '%timeit'}
 
 
 def _process_messages(mesages):
@@ -92,11 +95,10 @@ class MyReporter(Reporter):
     def _make_error_message(self, error):
         return ('An error happened when checking the source code. '
                 f'\n{error}\n\n'
-                '(if you want to proceed with execution anyway, set '
-                'static_analysis to False in the task declaration '
-                'and execute again)')
+                '(if you want to disable this check, set '
+                'static_analysis to "disable" in the task declaration)')
 
-    def _check(self):
+    def _check(self, raise_):
         self._seek_zero()
 
         # syntax errors are stored in _stderr
@@ -105,7 +107,13 @@ class MyReporter(Reporter):
         error_message = '\n'.join(self._stderr.readlines())
 
         if self._syntax:
-            raise SyntaxError(self._make_error_message(error_message))
+            msg = self._make_error_message(error_message)
+
+            if raise_:
+                raise SyntaxError(msg)
+            else:
+                warnings.warn(msg)
+
         elif self._unexpected:
             warnings.warn('An unexpected error happened '
                           f'when analyzing code: {error_message.strip()!r}')
@@ -116,10 +124,15 @@ class MyReporter(Reporter):
                 warnings.warn(warnings_)
 
             if errors:
-                raise RenderError(self._make_error_message(errors))
+                msg = self._make_error_message(errors)
+
+                if raise_:
+                    raise RenderError(msg)
+                else:
+                    warnings.warn(msg)
 
 
-def check_notebook(nb, params, filename):
+def check_notebook(nb, params, filename, raise_=True, check_signature=True):
     """
     Perform static analysis on a Jupyter notebook code cell sources
 
@@ -134,6 +147,10 @@ def check_notebook(nb, params, filename):
     filename : str
         Filename to identify pyflakes warnings and errors
 
+    raise_ : bool, default=True
+        If True, raises an Exception if it encounters errors, otherwise a
+        warning
+
     Raises
     ------
     SyntaxError
@@ -146,11 +163,13 @@ def check_notebook(nb, params, filename):
         When certain pyflakes errors are detected (e.g., undefined name)
     """
     params_cell, _ = find_cell_with_tag(nb, 'parameters')
-    check_source(nb)
-    check_params(params, params_cell['source'], filename)
+    check_source(nb, raise_=raise_)
+
+    if check_signature:
+        check_params(params, params_cell['source'], filename, warn=not raise_)
 
 
-def check_source(nb):
+def check_source(nb, raise_=True):
     """
     Run pyflakes on a notebook, wil catch errors such as missing passed
     parameters that do not have default values
@@ -167,32 +186,96 @@ def check_source(nb):
     # run pyflakes.api.check on the source code
     pyflakes_api.check(source_code, filename='', reporter=reporter)
 
-    reporter._check()
+    reporter._check(raise_)
+
+
+def _comment(line):
+    """Comments a line
+    """
+    return f'# {line}'
 
 
 def _comment_if_ipython_magic(source):
-    """Comments lines into comments if they're IPython magics
+    """Comments lines into comments if they're IPython magics (cell level)
     """
-    if _is_ipython_cell_magic(source):
-        # comment all lines
-        return '\n'.join(f'# {line}' for line in source.splitlines())
-    else:
-        return '\n'.join(
-            (line if not _is_ipython_line_magic(line) else f'# {line}')
-            for line in source.splitlines())
+    # TODO: support for nested cell magics. e.g.,
+    # %%timeit
+    # %%timeit
+    # something()
+    lines_out = []
+    comment_rest = False
+
+    # TODO: inline magics should add a comment at the end of the line, because
+    # the python code may change the dependency structure. e.g.,
+    # %timeit z = x + y -> z = x + y # [magic] %timeit
+    # note that this only applies to inline magics that take Python code as arg
+
+    # NOTE: magics can take inputs but their outputs ARE NOT saved. e.g.,
+    # %timeit x = y + 1
+    # running such magic requires having y but after running it, x IS NOT
+    # declared. But this is magic dependent %time x = y + 1 will add x to the
+    # scope
+
+    for line in source.splitlines():
+        cell_magic = _is_ipython_cell_magic(line)
+
+        if comment_rest:
+            lines_out.append(_comment(line))
+        else:
+            line_magic = _is_ipython_line_magic(line)
+
+            # if line magic, comment line
+            if line_magic:
+                lines_out.append(_comment(line))
+
+            # if inline shell, comment line
+            elif _is_inline_shell(line):
+                lines_out.append(_comment(line))
+
+            # if cell magic, comment line
+            elif cell_magic in HAS_INLINE_PYTHON:
+                lines_out.append(_comment(line))
+
+            # if cell magic whose content *is not* Python, comment line and
+            # all the remaining lines in the cell
+            elif cell_magic:
+                lines_out.append(_comment(line))
+                comment_rest = True
+
+            # otherwise, don't do anything
+            else:
+                lines_out.append(line)
+
+    return '\n'.join(lines_out)
 
 
 def _is_ipython_line_magic(line):
-    """Determines if the source line is an IPython magic
     """
-    return re.match(_LINE_IS_IPYTHON_LINE_MAGIC_REGEX, line) is not None
+    Determines if the source line is an IPython magic. e.g.,
+
+    %%bash
+    for i in 1 2 3; do
+      echo $i
+    done
+    """
+    return re.match(_IS_IPYTHON_LINE_MAGIC, line) is not None
+
+
+def _is_inline_shell(line):
+    return re.match(_IS_INLINE_SHELL, line) is not None
 
 
 def _is_ipython_cell_magic(source):
-    """Determines if the source is an IPython cell magic
+    """Determines if the source is an IPython cell magic. e.g.,
+
+    %cd some-directory
     """
-    return re.match(_CELL_IS_IPYTHON_CELL_MAGIC_REGEX,
-                    source.lstrip()) is not None
+    m = re.match(_IS_IPYTHON_CELL_MAGIC, source.lstrip())
+
+    if not m:
+        return False
+
+    return m.group()
 
 
 def check_params(passed, params_source, filename, warn=False):
@@ -247,11 +330,11 @@ def check_params(passed, params_source, filename, warn=False):
                 '\'parameters\' cell and assign the value as '
                 f'None. e.g., {first} = None)')
 
-        msg = (
-            f"Parameters "
-            "declared in the 'parameters' cell do not match task "
-            f"params. {pretty_print.trailing_dot(errors)} To disable this "
-            "check, set 'static_analysis' to False in the task declaration.")
+        msg = (f"Parameters "
+               "declared in the 'parameters' cell do not match task "
+               f"params. {pretty_print.trailing_dot(errors)} To disable this "
+               "check, set 'static_analysis' to 'disable' in the "
+               "task declaration.")
 
         if warn:
             warnings.warn(msg)

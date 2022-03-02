@@ -1,6 +1,7 @@
 from pathlib import Path
 import shutil
 from urllib import request
+from urllib.parse import quote_plus
 import zipfile
 
 
@@ -21,11 +22,11 @@ def config_init(app, config):
     # key: directory in the projects directory
     # value: directory in the documentation
     directories = {
-        'spec-api-python': 'get-started',
-        'parametrized': 'user-guide',
-        'sql-templating': 'user-guide',
-        'testing': 'user-guide',
-        'debugging': 'user-guide',
+        'guides/spec-api-python': 'get-started',
+        'guides/parametrized': 'user-guide',
+        'guides/sql-templating': 'user-guide',
+        'guides/testing': 'user-guide',
+        'guides/debugging': 'user-guide',
         'guides/serialization': 'user-guide',
         'guides/logging': 'user-guide',
     }
@@ -45,6 +46,15 @@ def git_clone():
 
     with zipfile.ZipFile('../../master.zip', 'r') as f:
         f.extractall('../../')
+
+
+def jinja_filters(app):
+    try:
+        app.builder.templates.environment.filters['quote_plus'] = quote_plus
+    except AttributeError:
+        # .templates only valid for the HTML builder, rtd also converts to
+        # other formats
+        pass
 
 
 if __name__ == '__main__':

@@ -22,22 +22,42 @@ from ploomber.util import default
 from ploomber import repo
 
 
-def test_env_repr_and_str(cleanup_env):
+def test_env_repr_and_str(cleanup_env, monkeypatch):
+    mock = Mock()
+    mock.datetime.now().isoformat.return_value = 'current-timestamp'
+    monkeypatch.setattr(expand, "datetime", mock)
+
     env = Env({'user': 'user', 'cwd': 'cwd', 'root': 'root'})
-    assert repr(env) == "Env({'user': 'user', 'cwd': 'cwd', 'root': 'root'})"
-    assert str(env) == "{'user': 'user', 'cwd': 'cwd', 'root': 'root'}"
+    d = {
+        'user': 'user',
+        'cwd': 'cwd',
+        'now': 'current-timestamp',
+        'root': 'root'
+    }
+    assert repr(env) == f"Env({d})"
+    assert str(env) == str(d)
 
 
-def test_env_repr_and_str_when_loaded_from_file(tmp_directory, cleanup_env):
+def test_env_repr_and_str_when_loaded_from_file(tmp_directory, cleanup_env,
+                                                monkeypatch):
+    mock = Mock()
+    mock.datetime.now().isoformat.return_value = 'current-timestamp'
+    monkeypatch.setattr(expand, "datetime", mock)
+
     path_env = Path('env.yaml')
-    d = {'user': 'user', 'cwd': 'cwd', 'root': 'root'}
+    d = {
+        'user': 'user',
+        'cwd': 'cwd',
+        'now': 'current-timestamp',
+        'root': 'root',
+    }
     path_env.write_text(yaml.dump(d))
     env = Env()
     path = str(path_env.resolve())
 
     expected = f"Env({d!r}) (from file: {path})"
     assert repr(env) == expected
-    assert str(env) == "{'user': 'user', 'cwd': 'cwd', 'root': 'root'}"
+    assert str(env) == str(d)
 
 
 def test_includes_path_in_repr_if_init_from_file(cleanup_env, tmp_directory):
@@ -432,6 +452,18 @@ def test_error_if_no_project_root(tmp_directory):
     assert 'Failed to expand {{root}}' in str(excinfo.value)
 
 
+def test_root_expands_relative_to_path_to_here(tmp_directory):
+    path = Path('some', 'nested', 'dir').resolve()
+    path.mkdir(parents=True)
+    (path / 'pipeline.yaml').touch()
+
+    raw = {'root': '{{root}}'}
+    expander = EnvironmentExpander(preprocessed={}, path_to_here=path)
+    out = expander.expand_raw_dictionary(raw)
+
+    assert out['root'] == str(path.resolve())
+
+
 def test_here_placeholder(tmp_directory, cleanup_env):
     Path('env.yaml').write_text(yaml.dump({'here': '{{here}}'}))
     env = Env()
@@ -697,10 +729,10 @@ def test_default_with_root(monkeypatch):
 @pytest.mark.parametrize('kwargs, expected', [
     [
         dict(source={'cwd': 'some_value'}, path_to_here='value'),
-        {'here', 'user'}
+        {'here', 'user', 'now'}
     ],
-    [dict(source={'cwd': 'some_value'}), {'user'}],
-    [dict(source={'user': 'some_value'}), {'cwd'}],
+    [dict(source={'cwd': 'some_value'}), {'user', 'now'}],
+    [dict(source={'user': 'some_value'}), {'cwd', 'now'}],
 ])
 def test_default_keys(kwargs, expected):
     assert EnvDict(**kwargs).default_keys == expected
@@ -719,7 +751,7 @@ def test_adds_default_keys_if_they_dont_exist(monkeypatch):
     assert env.here == str(Path('/dir').resolve())
     assert env.user == 'User'
     assert env.root == 'some_value'
-    assert env.default_keys == {'cwd', 'here', 'user', 'root'}
+    assert env.default_keys == {'cwd', 'here', 'user', 'root', 'now'}
 
 
 def test_find(tmp_directory):

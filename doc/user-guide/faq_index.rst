@@ -13,6 +13,14 @@ FAQ and Glossary
 
 .. include:: faq/autoreload.rst
 
+.. include:: faq/parameterize.rst
+
+.. include:: faq/plot.rst
+
+.. include:: faq/jupyterlab-1-dot-x.rst
+
+.. include:: faq/multiprocessing.rst
+
 Glossary
 --------
 

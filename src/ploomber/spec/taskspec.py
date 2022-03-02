@@ -1,8 +1,12 @@
 """
 Create Tasks from dictionaries
+
+Note: All validation errors should raise DAGSpecInitializationError, this
+allows the CLI to signal that this is a user's input error and hides the
+traceback and only displays the error message
 """
 from functools import partial
-from copy import copy
+from copy import copy, deepcopy
 from pathlib import Path
 from collections.abc import MutableMapping, Mapping
 import platform
@@ -51,14 +55,18 @@ def task_class_from_source_str(source_str, lazy_import, reload, product):
     happens here. If product is not None, it's also used to determine if
     a task is a SQLScript or SQLDump
     """
-    extension = Path(source_str).suffix
+    try:
+        extension = Path(source_str).suffix
+    except Exception as e:
+        raise DAGSpecInitializationError('Failed to initialize task '
+                                         f'from source {source_str!r}') from e
 
     # we verify if this is a valid dotted path
-    # if lazy load, just locate the module without importing it
+    # if lazy load is set to true, just locate the module without importing it
 
     fn_checker = (
-        dotted_path.locate_dotted_path_root if lazy_import else partial(
-            dotted_path.load_dotted_path, raise_=True, reload=reload))
+        dotted_path.locate_dotted_path_root if lazy_import is True else
+        partial(dotted_path.load_dotted_path, raise_=True, reload=reload))
 
     if extension and extension in suffix2taskclass:
         if extension == '.sql' and _safe_suffix(product) in {
@@ -68,11 +76,16 @@ def task_class_from_source_str(source_str, lazy_import, reload, product):
 
         return suffix2taskclass[extension]
     elif _looks_like_path(source_str):
-        raise ValueError('Failed to determine task class for '
-                         f'source {source_str!r} (invalid '
-                         f'extension {extension!r}). Valid extensions '
-                         f'are: {pretty_print.iterable(suffix2taskclass)}')
-    else:
+        raise DAGSpecInitializationError(
+            'Failed to determine task class for '
+            f'source {source_str!r} (invalid '
+            f'extension {extension!r}). Valid extensions '
+            f'are: {pretty_print.iterable(suffix2taskclass)}')
+    elif lazy_import == 'skip':
+        # Anything that has not been caught before is treated as a
+        # Python function, thus we return a PythonCallable
+        return tasks.PythonCallable
+    elif '.' in source_str:
         try:
             imported = fn_checker(source_str)
             error = None
@@ -81,13 +94,16 @@ def task_class_from_source_str(source_str, lazy_import, reload, product):
             error = e
 
         if imported is None:
-            raise ValueError(
-                'Could not determine task class for '
-                f'source {source_str!r} due to error: {error!s}. '
-                'This looks like a dotted path but it failed to import. '
-                'You can also set the task class using the "class" key.')
+            raise DAGSpecInitializationError(
+                'Failed to determine task class for '
+                f'source {source_str!r}: {error!s}. ')
         else:
             return tasks.PythonCallable
+    else:
+        raise DAGSpecInitializationError(
+            f'Failed to determine task source {source_str!r}\nValid extensions'
+            f' are: {pretty_print.iterable(suffix2taskclass)}\n'
+            'You can also define functions as [module_name].[function_name]')
 
 
 def task_class_from_spec(task_spec, lazy_import, reload):
@@ -169,9 +185,8 @@ class TaskSpec(MutableMapping):
                  project_root,
                  lazy_import=False,
                  reload=False):
-        # FIXME: make sure data and meta are immutable structures
-        self.data = data
-        self.meta = meta
+        self.data = deepcopy(data)
+        self.meta = deepcopy(meta)
         self.project_root = project_root
         self.lazy_import = lazy_import
 
@@ -224,16 +239,16 @@ class TaskSpec(MutableMapping):
                       name=repr(self))
 
         if self.meta['extract_upstream'] and self.data.get('upstream'):
-            raise ValueError('Error validating task "{}", if '
-                             'meta.extract_upstream is set to True, tasks '
-                             'should not have an "upstream" key'.format(
-                                 self.data))
+            raise DAGSpecInitializationError(
+                'Error validating task "{}", if '
+                'meta.extract_upstream is set to True, tasks '
+                'should not have an "upstream" key'.format(self.data))
 
         if self.meta['extract_product'] and self.data.get('product'):
-            raise ValueError('Error validating task "{}", if '
-                             'meta.extract_product is set to True, tasks '
-                             'should not have a "product" key'.format(
-                                 self.data))
+            raise DAGSpecInitializationError(
+                'Error validating task "{}", if '
+                'meta.extract_product is set to True, tasks '
+                'should not have a "product" key'.format(self.data))
 
     def to_task(self, dag):
         """
@@ -252,13 +267,21 @@ class TaskSpec(MutableMapping):
         upstream = _make_iterable(data.pop('upstream'))
 
         if 'grid' in data:
+            data_source_ = data["source"]
+            data_source = str(data_source_ if not hasattr(
+                data_source_, '__name__') else data_source_.__name__)
+
             if 'params' in data:
-                raise KeyError(f'Error initializing task with spec {data!r}: '
-                               '\'params\' is not allowed when using \'grid\'')
+                raise DAGSpecInitializationError(
+                    'Error initializing task with '
+                    f'source {data_source!r}: '
+                    '\'params\' is not allowed when using \'grid\'')
 
             if 'name' not in data:
-                raise KeyError(f'Error initializing task with spec {data!r}: '
-                               'tasks with \'grid\' must have a \'name\'')
+                raise DAGSpecInitializationError(
+                    f'Error initializing task with '
+                    f'source {data_source!r}: '
+                    'tasks with \'grid\' must have a \'name\'')
 
             task_class = data.pop('class')
             product_class = _find_product_class(task_class, data, self.meta)
@@ -372,10 +395,10 @@ def _init_task(data, meta, project_root, lazy_import, dag):
                       dag=dag,
                       **task_dict)
     except Exception as e:
-        msg = (f'Error initializing {class_.__name__} from {data!r}. '
-               f'Error: {e.args[0]}')
-        e.args = (msg, )
-        raise
+        source_ = pretty_print.try_relative_path(source)
+        msg = (f'Failed to initialize {class_.__name__} task with '
+               f'source {source_!r}.')
+        raise DAGSpecInitializationError(msg) from e
 
     if on_finish:
         task.on_finish = dotted_path.DottedPath(on_finish,
@@ -444,11 +467,10 @@ def _find_product_class(task_class, task_dict, meta):
     elif meta_product_default_class:
         return validate_product_class_name(meta_product_default_class)
     else:
-        raise ValueError('Could not determine a product class for task: '
-                         '"{}". Add an explicit value in the '
-                         '"product_class" key or provide a default value in '
-                         'meta.product_default_class by setting the '
-                         'key to the applicable task class'.format(task_dict))
+        raise DAGSpecInitializationError(
+            f'Could not determine a product class for task: '
+            f'{task_dict!r}. Add an explicit value in the '
+            '"product_class"')
 
 
 def try_product_init(class_, product_raw, relative_to, kwargs):

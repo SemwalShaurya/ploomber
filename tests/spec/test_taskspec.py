@@ -6,7 +6,7 @@ from ploomber.spec.taskspec import TaskSpec, task_class_from_source_str
 from ploomber.spec.dagspec import Meta
 from ploomber.tasks import (NotebookRunner, SQLScript, SQLDump, ShellScript,
                             PythonCallable)
-from ploomber.exceptions import DAGSpecInitializationError
+from ploomber.exceptions import DAGSpecInitializationError, ValidationError
 from ploomber import DAG
 
 
@@ -29,7 +29,7 @@ def test_task_class_from_script(tmp_directory, source_str, expected):
     str(Path('something', 'another', 'script.json')),
 ])
 def test_task_class_from_script_unknown_extension(tmp_directory, source_str):
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         task_class_from_source_str(source_str,
                                    lazy_import=False,
                                    reload=False,
@@ -51,11 +51,24 @@ def fn():
 
 
 def test_task_class_from_source_str_error():
-    with pytest.raises(ValueError):
+    with pytest.raises(DAGSpecInitializationError):
         task_class_from_source_str('not_a_module.not_a_function',
                                    lazy_import=False,
                                    reload=False,
                                    product=None)
+
+
+def test_task_class_from_source_str_invalid_path():
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
+        task_class_from_source_str([],
+                                   lazy_import=None,
+                                   reload=None,
+                                   product=None)
+
+    error = "Failed to initialize task from source []"
+    assert error in str(excinfo.value)
+    repr_ = str(excinfo.getrepr())
+    assert 'expected str' in repr_
 
 
 @pytest.mark.parametrize(
@@ -169,7 +182,7 @@ def test_initialization(spec, expected, tmp_sample_tasks, tmp_imports):
 
 @pytest.mark.parametrize('key', ['source', 'product'])
 def test_validate_missing_source(key):
-    with pytest.raises(KeyError):
+    with pytest.raises(ValidationError):
         TaskSpec({key: None}, {
             'extract_product': False,
             'extract_upstream': False
@@ -195,7 +208,7 @@ def test_validate_missing_source(key):
     }),
 ])
 def test_error_if_extract_but_keys_declared(task, meta):
-    with pytest.raises(ValueError):
+    with pytest.raises(DAGSpecInitializationError):
         TaskSpec(task, meta, project_root='.')
 
 
@@ -424,6 +437,21 @@ def test_error_on_invalid_product_class(backup_spec_with_functions_flat,
     assert str(excinfo.value) == expected
 
 
+def test_error_on_invalid_source(backup_spec_with_functions_flat, tmp_imports):
+    meta = Meta.default_meta({'extract_product': False})
+
+    spec = {'source': 'someinvalidstring', 'product': 'output_product'}
+
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
+        TaskSpec(spec, meta=meta, project_root='.').to_task(dag=DAG())
+
+    expected = ("Failed to determine task source 'someinvalidstring'\n"
+                "Valid extensions are: '.R', '.Rmd', '.ipynb', '.py', '.r', "
+                "'.sh', and '.sql'\nYou can also define functions as "
+                "[module_name].[function_name]")
+    assert str(excinfo.value) == expected
+
+
 @pytest.fixture
 def grid_spec():
     return {
@@ -518,18 +546,18 @@ def test_grid_with_missing_name(backup_spec_with_functions_flat, tmp_imports,
                                 grid_spec):
     del grid_spec['name']
 
-    with pytest.raises(KeyError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         TaskSpec(grid_spec, Meta.default_meta(),
                  project_root='.').to_task(dag=DAG())
 
-    assert 'Error initializing task with spec' in str(excinfo.value)
+    assert 'Error initializing task with source' in str(excinfo.value)
 
 
 def test_grid_and_params(backup_spec_with_functions_flat, tmp_imports,
                          grid_spec):
     grid_spec['params'] = {'a': 1}
 
-    with pytest.raises(KeyError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         TaskSpec(grid_spec, Meta.default_meta(),
                  project_root='.').to_task(dag=DAG())
 
@@ -559,3 +587,23 @@ def fn():
         lazy_import=True)
 
     assert spec.to_task(dag=DAG())
+
+
+def test_constructor_deep_copies_spec_and_meta(tmp_directory, tmp_imports):
+    prod_default_class = {'SQLScript': 'SQLRelation'}
+    meta = Meta.default_meta({
+        'extract_product': False,
+        'product_default_class': prod_default_class
+    })
+    params = {'params': {'a': 1}}
+    spec = {
+        'source': 'sample.sql',
+        'product': 'some_file.txt',
+        'params': params
+    }
+    task_spec = TaskSpec(data=spec, meta=meta, project_root='.')
+
+    assert spec is not task_spec.data
+    assert meta is not task_spec.meta
+    assert params is not task_spec.data['params']
+    assert prod_default_class is not task_spec.meta['product_default_class']

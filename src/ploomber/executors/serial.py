@@ -1,10 +1,10 @@
 import warnings
 from multiprocessing import Pool
-import traceback
 import logging
 
 from tqdm.auto import tqdm
 from ploomber.executors.abc import Executor
+from ploomber.executors import _format
 from ploomber.exceptions import DAGBuildError, DAGBuildEarlyStop
 from ploomber.messagecollector import (BuildExceptionsCollector,
                                        BuildWarningsCollector)
@@ -162,7 +162,8 @@ class LazyFunction:
 def catch_warnings(fn, warnings_all):
     # TODO: we need a try catch in case fn() raises an exception
     with warnings.catch_warnings(record=True) as warnings_current:
-        # do we need: warnings.simplefilter("always")?
+        warnings.simplefilter("ignore", DeprecationWarning)
+
         result = fn()
 
     if warnings_current:
@@ -190,7 +191,7 @@ def catch_exceptions(fn, exceptions_all):
         # FIXME: this is going to cause duplicates if not running in a
         # subprocess
         logger.exception(str(e))
-        tr = traceback.format_exc()
+        tr = _format.exception(e)
         exceptions_all.append(task=fn.task, message=tr, obj=e)
 
 
@@ -207,7 +208,19 @@ def build_in_current_process(task, build_kwargs, reports_all):
 
 def build_in_subprocess(task, build_kwargs, reports_all):
     if callable(task.source.primitive):
-        p = Pool(processes=1)
+
+        try:
+            p = Pool(processes=1)
+        except RuntimeError as e:
+            if 'An attempt has been made to start a new process' in str(e):
+                # this is most likely due to child processes created with
+                # spawn (mac/windows) outside if __name__ == '__main__'
+                raise RuntimeError('Press ctrl + c to exit. '
+                                   'For help solving this, go to: '
+                                   'https://ploomber.io/s/mp') from e
+            else:
+                raise
+
         res = p.apply_async(func=task._build, kwds=build_kwargs)
         # calling this make sure we catch the exception, from the docs:
         # Return the result when it arrives. If timeout is not None and

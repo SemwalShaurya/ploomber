@@ -33,6 +33,26 @@ def process_arg(s):
     return clean.replace('-', '_')
 
 
+class CustomMutuallyExclusiveGroup(argparse._MutuallyExclusiveGroup):
+    """
+    A subclass of argparse._MutuallyExclusiveGroup that determines whether
+    the added args should go into the static of dynamic API
+    """
+    def add_argument(self, *args, **kwargs):
+        if not self._container.finished_static_api:
+            if (not self._container.in_context
+                    and self._container.finished_init):
+                raise RuntimeError('Cannot add arguments until the static '
+                                   'API has been declared')
+            else:
+                # running inside the context manager
+                self._container.static_args.extend(
+                    [process_arg(arg) for arg in args])
+
+        # outside context manager
+        return super().add_argument(*args, **kwargs)
+
+
 class CustomParser(argparse.ArgumentParser):
     """
     Most of our CLI commands operate on entry points, the CLI signature is
@@ -58,6 +78,11 @@ class CustomParser(argparse.ArgumentParser):
                           '-l',
                           help='Enables logging to stdout at the '
                           'specified level',
+                          default=None)
+
+        self.add_argument('--log-file',
+                          '-F',
+                          help='Enables logging to the given file',
                           default=None)
 
         if self.DEFAULT_ENTRY_POINT:
@@ -114,13 +139,32 @@ class CustomParser(argparse.ArgumentParser):
             self.error(f'argument {options}: expected one argument')
 
     def add_argument(self, *args, **kwargs):
+        """
+        Add a CLI argument. If called after the context manager, it is
+        considered part of the dynamic API, if called within the context
+        manager, the arg is considered part of the static API. If it's
+        called outside a context manager, and no static API has been set,
+        it raises an error
+        """
         if not self.finished_static_api:
             if not self.in_context and self.finished_init:
                 raise RuntimeError('Cannot add arguments until the static '
                                    'API has been declared')
             else:
+                # running inside the context manager
                 self.static_args.extend([process_arg(arg) for arg in args])
+
+        # outside context manager
         return super().add_argument(*args, **kwargs)
+
+    def add_mutually_exclusive_group(self, **kwargs):
+        """
+        Add a mutually exclusive group. It returns a custom class that
+        correctly stores the arguments in the static or dynamic API
+        """
+        group = CustomMutuallyExclusiveGroup(self, **kwargs)
+        self._mutually_exclusive_groups.append(group)
+        return group
 
     def __enter__(self):
         self.in_context = True
@@ -145,9 +189,7 @@ class CustomParser(argparse.ArgumentParser):
 
         args = self.parse_args()
 
-        if hasattr(args, 'log'):
-            if args.log is not None:
-                logging.basicConfig(level=args.log.upper())
+        _configure_logger(args)
 
         # extract required (by using function signature) params from the cli
         # args
@@ -161,6 +203,16 @@ class CustomParser(argparse.ArgumentParser):
         # to execute, test using the first one
         dag = entry(**{**kwargs, **replaced})
 
+        return dag, args
+
+    def load_from_entry_point_arg(self):
+        """Parses an entry point, adding arguments by extracting them from the env.
+
+        Returns a dag and the parsed args
+        """
+        entry_point = EntryPoint(self.parse_entry_point_value())
+        dag, args = load_dag_from_entry_point_and_parser(
+            entry_point, self, sys.argv)
         return dag, args
 
 
@@ -304,9 +356,24 @@ def _add_args_from_callable(parser, callable_):
     required, defaults, params = _parse_signature_from_callable(callable_)
 
     for arg in defaults.keys():
-        parser.add_argument('--' + arg,
-                            help=get_desc(doc, arg),
-                            **add_argument_kwargs(params, arg))
+        conflict = False
+
+        try:
+            parser.add_argument('--' + arg,
+                                help=get_desc(doc, arg),
+                                **add_argument_kwargs(params, arg))
+        except argparse.ArgumentError as e:
+            conflict = e
+
+        if conflict:
+            if 'conflicting option string' in conflict.message:
+                raise ValueError(
+                    f'The signature from {callable_.__name__!r} '
+                    'conflicts with existing arguments in the command-line '
+                    'interface, please rename the following '
+                    f'argument: {arg!r}')
+            else:
+                raise conflict
 
     for arg in required:
         parser.add_argument(arg,
@@ -353,9 +420,7 @@ def _process_file_dir_or_glob(parser, dagspec_arg=None):
     args = parser.parse_args()
     dagspec_arg = dagspec_arg or args.entry_point
 
-    if hasattr(args, 'log'):
-        if args.log is not None:
-            logging.basicConfig(level=args.log.upper())
+    _configure_logger(args)
 
     entry_point = EntryPoint(dagspec_arg)
 
@@ -375,19 +440,6 @@ def _process_file_dir_or_glob(parser, dagspec_arg=None):
         else:
             dag = DAGSpec(dagspec_arg).to_dag()
 
-    return dag, args
-
-
-# FIXME: I think this is always used with CustomParser, we should make it
-# and instance method instead
-def _custom_command(parser):
-    """
-    Parses an entry point, adding arguments by extracting them from the env.
-    Returns a dag and the parsed args
-    """
-    entry_point = EntryPoint(parser.parse_entry_point_value())
-    dag, args = load_dag_from_entry_point_and_parser(entry_point, parser,
-                                                     sys.argv)
     return dag, args
 
 
@@ -450,3 +502,16 @@ def _flatten_dict(d, prefix=''):
             out[prefix + k] = v
 
     return out
+
+
+def _configure_logger(args):
+    """Configure logger if user passed --log/--log-file args
+    """
+    if hasattr(args, 'log'):
+        if args.log is not None:
+            logging.basicConfig(level=args.log.upper())
+
+    if hasattr(args, "log_file"):
+        if args.log_file is not None:
+            file_handler = logging.FileHandler(args.log_file)
+            logging.getLogger().addHandler(file_handler)

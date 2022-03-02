@@ -20,7 +20,7 @@ import hooks  # noqa
 # -- Project information -----------------------------------------------------
 
 project = 'ploomber'
-copyright = '2021, ploomber'
+copyright = '2022, ploomber'
 author = 'ploomber'
 version = __version__
 release = version
@@ -101,3 +101,4 @@ html_show_copyright = False
 
 def setup(app):
     app.connect('config-inited', hooks.config_init)
+    app.connect("builder-inited", hooks.jinja_filters)

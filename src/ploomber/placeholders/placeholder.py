@@ -1,12 +1,15 @@
+import json
 from collections.abc import Mapping
 import logging
 from pathlib import Path
 from reprlib import Repr
 
-from ploomber.exceptions import RenderError, SourceInitializationError
-from ploomber.placeholders import util, extensions, abc
+import yaml
 from jinja2 import (Environment, Template, UndefinedError, FileSystemLoader,
                     PackageLoader, StrictUndefined)
+
+from ploomber.exceptions import RenderError, SourceInitializationError
+from ploomber.placeholders import util, extensions, abc
 
 
 class Placeholder(abc.AbstractPlaceholder):
@@ -51,6 +54,7 @@ class Placeholder(abc.AbstractPlaceholder):
     You can use "raise" in a placeholder to raise exceptions, useful for
     validating input parameters: "{% raise 'some error message' %}"
     """
+
     def __init__(self, primitive, hot_reload=False, required=None):
         self._logger = logging.getLogger('{}.{}'.format(
             __name__,
@@ -201,8 +205,9 @@ class Placeholder(abc.AbstractPlaceholder):
         optional = set(optional)
 
         passed = set(params.keys())
+        available = passed | set(self._template.environment.globals)
 
-        missing = self.variables - passed
+        missing = self.variables - available
         extra = passed - self.variables - optional
 
         # FIXME: self.variables should also be updated on hot_reload
@@ -284,9 +289,11 @@ def _init_template(raw, loader_init):
     object
     """
     if loader_init is None:
-        return Template(raw,
-                        undefined=StrictUndefined,
-                        extensions=(extensions.RaiseExtension, ))
+        template = Template(raw,
+                            undefined=StrictUndefined,
+                            extensions=(extensions.RaiseExtension, ))
+        _add_globals(template.environment)
+        return template
     else:
         if loader_init['class'] == 'FileSystemLoader':
             loader = FileSystemLoader(**loader_init['kwargs'])
@@ -300,7 +307,29 @@ def _init_template(raw, loader_init):
         env = Environment(loader=loader,
                           undefined=StrictUndefined,
                           extensions=(extensions.RaiseExtension, ))
+        _add_globals(env)
+
         return env.from_string(raw)
+
+
+def _add_globals(env):
+    """Update jinja2.Template.environment to add utility globals
+    """
+    env.globals['get_key'] = _get_key
+
+
+def _get_key(path, key):
+    path = Path(path)
+
+    suffix2fn = {'.json': json.loads, '.yaml': yaml.safe_load}
+
+    fn = suffix2fn.get(path.suffix)
+
+    if not fn:
+        raise ValueError('get_key must be used with .json or .yaml files. '
+                         f'Got: {path.suffix!r}')
+
+    return fn(path.read_text())[key]
 
 
 def _get_package_name(loader):

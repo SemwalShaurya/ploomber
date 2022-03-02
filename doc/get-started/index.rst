@@ -8,7 +8,7 @@ Get Started
 .. toctree::
     :maxdepth: 2
 
-    install
+    what-is
+    quick-start
     spec-api-python
     basic-concepts
-    sql-pipeline

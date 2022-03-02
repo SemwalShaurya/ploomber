@@ -20,6 +20,26 @@ import test_pkg
 from ploomber.clients import SQLAlchemyClient
 from ploomber import Env
 import pandas as pd
+from glob import iglob
+from ploomber.cli import install
+import posthog
+from unittest.mock import Mock, MagicMock
+
+
+@pytest.fixture(scope='class')
+def monkeypatch_session():
+    from _pytest.monkeypatch import MonkeyPatch
+    m = MonkeyPatch()
+    yield m
+    m.undo()
+
+
+@pytest.fixture(scope='class', autouse=True)
+def external_access(monkeypatch_session):
+    external_access = MagicMock()
+    external_access.get_something = MagicMock(return_value='Mock was used.')
+    monkeypatch_session.setattr(posthog, 'capture',
+                                external_access.get_something)
 
 
 def _path_to_tests():
@@ -37,6 +57,7 @@ def fixture_tmp_dir(source):
     # some_fixture = factory('some/path')
     # but didn't work
     def decorator(function):
+
         @wraps(function)
         def wrapper():
             old = os.getcwd()
@@ -47,6 +68,11 @@ def fixture_tmp_dir(source):
             shutil.copytree(str(source), str(tmp))
             os.chdir(str(tmp))
             yield tmp
+
+            # some tests create sample git repos, if we are on windows, we
+            # need to change permissions to be able to delete the files
+            _delete_all_dot_git()
+
             os.chdir(old)
             shutil.rmtree(tmp_dir)
 
@@ -59,7 +85,9 @@ def fixture_backup(source):
     """
     Similar to fixture_tmp_dir but backups the content instead
     """
+
     def decorator(function):
+
         @wraps(function)
         def wrapper():
             old = os.getcwd()
@@ -121,6 +149,11 @@ def backup_spec_with_functions_flat():
     pass
 
 
+@fixture_backup('spec-with-functions-no-sources')
+def backup_spec_with_functions_no_sources():
+    pass
+
+
 @fixture_backup('simple')
 def backup_simple():
     pass
@@ -129,6 +162,20 @@ def backup_simple():
 @fixture_backup('online')
 def backup_online():
     pass
+
+
+def _delete_dot_git_at(path):
+    for root, dirs, files in os.walk(path):
+        for dir_ in dirs:
+            os.chmod(Path(root, dir_), stat.S_IRWXU)
+        for file_ in files:
+            os.chmod(Path(root, file_), stat.S_IRWXU)
+
+
+def _delete_all_dot_git():
+    if os.name == 'nt':
+        for path in iglob('**/.git', recursive=True):
+            _delete_dot_git_at(path)
 
 
 @pytest.fixture()
@@ -141,12 +188,7 @@ def tmp_directory():
 
     # some tests create sample git repos, if we are on windows, we need to
     # change permissions to be able to delete the files
-    if os.name == 'nt' and Path('.git').exists():
-        for root, dirs, files in os.walk('.git'):
-            for dir_ in dirs:
-                os.chmod(Path(root, dir_), stat.S_IRWXU)
-            for file_ in files:
-                os.chmod(Path(root, file_), stat.S_IRWXU)
+    _delete_all_dot_git()
 
     os.chdir(old)
 
@@ -247,6 +289,60 @@ def path_to_env():
 @pytest.fixture(scope='session')
 def path_to_assets():
     return _path_to_tests() / 'assets'
+
+
+def _write_sample_conda_env(name='environment.yml', env_name='my_tmp_env'):
+    Path(name).write_text(f'name: {env_name}\ndependencies:\n- pip')
+
+
+def _write_sample_conda_env_lock():
+    _write_sample_conda_env(name='environment.lock.yml')
+
+
+def _write_sample_conda_files(dev=False):
+    _write_sample_conda_env(
+        'environment.yml' if not dev else 'environment.dev.yml')
+    _write_sample_conda_env(
+        'environment.lock.yml' if not dev else 'environment.dev.lock.yml')
+
+
+def _write_sample_pip_files(dev=False):
+    Path('requirements.txt' if not dev else 'requirements.dev.txt').touch()
+    Path('requirements.lock.txt' if not dev else 'requirements.dev.lock.txt'
+         ).touch()
+
+
+def _write_sample_pip_req(name='requirements.txt'):
+    Path(name).touch()
+
+
+def _write_sample_pip_req_lock(name='requirements.lock.txt'):
+    Path(name).touch()
+
+
+def _prepare_files(
+    has_conda,
+    use_lock,
+    env,
+    env_lock,
+    reqs,
+    reqs_lock,
+    monkeypatch,
+):
+    mock = Mock(return_value=has_conda)
+    monkeypatch.setattr(install.shutil, 'which', mock)
+
+    if env:
+        _write_sample_conda_env()
+
+    if env_lock:
+        _write_sample_conda_env_lock()
+
+    if reqs:
+        _write_sample_pip_req()
+
+    if reqs_lock:
+        _write_sample_pip_req_lock()
 
 
 def _load_db_credentials():

@@ -17,15 +17,15 @@ Quick Start
 
 If you want to take a look at the sample pipeline, you have a few options:
 
-- `Source code on Github <https://github.com/ploomber/projects/tree/master/spec-api-sql>`_
-- `Interactive demo <https://mybinder.org/v2/gh/ploomber/projects/master?filepath=spec-api-sql%2FREADME.md>`_
+- `Source code on Github <https://github.com/ploomber/projects/tree/master/templates/spec-api-sql>`_
+- `Interactive demo <https://mybinder.org/v2/gh/ploomber/binder-env/main?urlpath=git-pull%3Frepo%3Dhttps%253A%252F%252Fgithub.com%252Fploomber%252Fprojects%26urlpath%3Dlab%252Ftree%252Fprojects%252Ftemplates/spec-api-sql%252FREADME.ipynb%26branch%3Dmaster>`_
 
 Or run it locally:
 
 
 .. code-block:: console
 
-    ploomber examples --name spec-api-sql
+    ploomber examples --name templates/spec-api-sql
 
 
 Connecting to databases
@@ -274,8 +274,8 @@ the terminal:
 The following diagram shows our example pipeline along with some sample
 source code for each task and the rendered version.
 
-.. image:: https://ploomber.io/doc/sql/diag.png
-   :target: https://ploomber.io/doc/sql/diag.png
+.. image:: https://ploomber.io/images/doc/sql/diag.png
+   :target: https://ploomber.io/images/doc/sql/diag.png
    :alt: sql-diag
 
 Dumping data with ``SQLDump``
@@ -360,4 +360,4 @@ Where to go from here
 ---------------------
 
 - :doc:`../user-guide/sql-templating` shows how to use jinja to write succinct SQL scripts
-- `Advanced SQL pipeline example <https://github.com/ploomber/projects/tree/master/etl>`_
+- `Advanced SQL pipeline example <https://github.com/ploomber/projects/tree/master/templates/etl>`_

@@ -20,9 +20,6 @@ A typical ``pipeline.yaml`` looks like this:
 .. code-block:: yaml
     :class: text-editor
 
-    meta:
-        extract_product: False
-
     tasks:
         - source: functions.get_raw_data
           product: output/raw.csv
@@ -99,7 +96,8 @@ sections are shown first:
         product_relative_to_source: False
 
     # execute tasks serially or in parallel (defaults to "serial")
-    executor: serial # or parallel
+    # for details, scroll down to the "executor" section
+    executor: serial # parallel, or dotted path
 
     # DAG configuration (optional section)
     config:
@@ -155,6 +153,45 @@ sections are shown first:
           grid:
             some_param: some_value
 
+
+``executor``
+************
+
+Determines which executor to use:
+
+1. ``serial``: Runs one task at a time (Note: By default, function tasks run in a subprocess)
+2. ``parallel``: Run independent tasks in parallel (Note: this runs all tasks in a subprocess)
+3. Dotted path: This allows you to customize the initialization parameters
+
+For example, say you want to use the :class:`ploomber.executors.Serial` executor
+but do not want to run functions in a subprocess, you can pass a dotted path
+and custom parameters like this:
+
+.. code-block:: yaml
+    :class: text-editor
+
+    executor:
+      dotted_path: ploomber.executors.Serial
+      build_in_subprocess: false # do not run function tasks in a subprocess
+
+
+Another common use case is to limit the number of subprocesses when using the
+:class:`ploomber.executors.Parallel` executor:
+
+
+.. code-block:: yaml
+    :class: text-editor
+
+    executor:
+      dotted_path: ploomber.executors.Parallel
+      processes: 2 # limit to a max of 2 processes
+
+
+To learn more about the executors:
+
+* :class:`ploomber.executors.Serial`
+* :class:`ploomber.executors.Parallel`
+
 ``clients``
 ***********
 
@@ -166,7 +203,7 @@ Keys must be valid :py:mod:`ploomber.tasks` or :py:mod:`ploomber.products`
 names, values must be dotted paths to functions that return a
 :py:mod:`ploomber.clients` instance.
 
-`Here's an example <https://github.com/ploomber/projects/tree/master/spec-api-sql>`_
+`Here's an example <https://github.com/ploomber/projects/tree/master/templates/spec-api-sql>`_
 that uses ``clients`` to configure Task and Product clients.
 
 Other scenarios are :py:mod:`ploomber.products.File` clients, which Ploomber can use
@@ -277,7 +314,7 @@ all operations in memory (e.g., to do online serving).
 into an in-memory one without code changes, allowing you to re-use your
 feature engineering code for training and serving. The only requisite is for
 tasks to configure a ``serializer`` and ``unserializer``.
-`Click here <https://github.com/ploomber/projects/tree/master/ml-online>`_ to
+`Click here <https://github.com/ploomber/projects/tree/master/templates/ml-online>`_ to
 see an example.
 
 Normally, a task whose source is a function looks like this:
@@ -382,7 +419,7 @@ from ``path/to/my_package/my_sources/script.sql``.
 paths and absolute paths are not affected.
 
 For details, see :py:mod:`ploomber.SourceLoader`, which is the underlying Python
-implementation. `Here's an example that uses source_loader <https://github.com/ploomber/projects/blob/master/ml-online/src/ml_online/pipeline.yaml>`_.
+implementation. `Here's an example that uses source_loader <https://github.com/ploomber/projects/blob/master/templates/ml-online/src/ml_online/pipeline.yaml>`_.
 
 SQLScript product class
 ***********************
@@ -392,7 +429,7 @@ product class. Such product doesn't save product's metadata; required for
 incremental builds (:ref:`incremental-builds`). If you want to use them, you
 need to change the default value and configure the product's client.
 
-`Here's an example <https://github.com/ploomber/projects/tree/master/spec-api-sql>`_
+`Here's an example <https://github.com/ploomber/projects/tree/master/templates/spec-api-sql>`_
 that uses ``product_default_class`` to configure a SQLite pipeline with
 incremental builds.
 
@@ -412,9 +449,9 @@ For example, you may define all your feature engineering code in a
 ``import_tasks_from``) in a training pipeline (``pipeline.yaml``)
 and a serving pipeline (``pipeline-serving.yaml``).
 
-`Click here <https://github.com/ploomber/projects/tree/master/ml-online/src/ml_online>`_ to see a batch serving example. 
+`Click here <https://github.com/ploomber/projects/tree/master/templates/ml-intermediate>`_ to see a batch serving example.
 
-`Click here <https://github.com/ploomber/projects/tree/master/ml-intermediate>`_ to see an online serving example.
+`Click here <https://github.com/ploomber/projects/tree/master/templates/ml-online>`_ to see an online serving example.
 
 
 Loading from a factory
@@ -598,10 +635,10 @@ Python/R scripts/notebooks receive a ``product`` variable in the
 .. code-block:: py
     :class: text-editor
 
-    # + tags=["parameters"]
+    # %% tags=["parameters"]
     product = None
 
-    # + tags=["injected-parameters"]
+    # %% tags=["injected-parameters"]
     product = '/path/to/output/data.csv'
 
     # your code...
@@ -659,10 +696,10 @@ Python/R scripts/notebooks receive them in the "injected-parameters" cell:
 .. code-block:: py
     :class: text-editor
 
-    # + tags=["parameters"]
+    # %% tags=["parameters"]
     my_param = None
 
-    # + tags=["injected-parameters"]
+    # %% tags=["injected-parameters"]
     my_param = 42
 
     # your code...
@@ -736,7 +773,17 @@ If your hook takes arguments, you may call it like this:
         dotted_path: {dotted.path.to.hook}
         argument: value
 
-For example:
+For example, let's say your ``on_render`` hook looks like this:
+
+
+.. code-block:: python
+    :class: text-editor
+
+    def on_render(some_param):
+        print(f'some_param: {some_param}')
+
+
+You can pass a value from the ``pipeline.yaml`` file like this:
 
 .. code-block:: yaml
     :class: text-editor
@@ -748,6 +795,7 @@ For example:
         some_param: 42
 
 Calling with arguments is useful when you have :doc:`a parametrized pipeline <../user-guide/parametrized>`.
+
 
 If you need information from the task, you may add any of the following
 arguments to the hook:
@@ -892,9 +940,9 @@ Custom task parameters
 Parametrizing with ``env.yaml``
 -------------------------------
 
-In some situations, it's useful to parametrize a pipeline. For example, you
+In some situations, it's helpful to parametrize a pipeline. For example, you
 could run your pipeline with a sample of the data as a smoke test; to make
-sure it runs before triggering a run with the full dataset, which could take
+sure it runs before triggering a run with the entire dataset, which could take
 several hours to finish.
 
 
@@ -954,6 +1002,18 @@ your ``pipeline.yaml`` values (not keys):
           '{{placeholder}}': value
 
 
+You can update your ``env.yaml`` file or switch them from the command-line to
+change the parameter values, run ``ploomber build --help`` to get a list of
+arguments you can pass to override the parameters defined in ``env.yaml``.
+
+Note that these parameters are constant (they must be changed explicitly by you
+either by updating the ``env.yaml`` file or via the command line), if you want
+to define dynamic parameters, you can do so with the Python API,
+`check out this example <https://github.com/ploomber/projects/tree/master/cookbook/dynamic-params>`_ for an
+example.
+
+
+
 Setting parameters from the CLI
 *******************************
 
@@ -982,7 +1042,7 @@ even if not defined in the ``env.yaml`` (or if you don't have a ``env.yaml`` alt
 * ``{{cwd}}``: Absolute path to the current working directory
 * ``{{root}}``: Absolute path to project's root folder. It is usually the same as ``{{here}}``, except when the project is a package (i.e., it has ``setup.py`` file), in such a case, it points to the parent directory of the ``setup.py`` file.
 * ``{{user}}``: Current username
-
+* ``{{now}}``: Current timestamp in ISO 8601 format (*Added in Ploomber 0.13.4*)
 
 A common use case for this is when passing paths to files to scripts/notebooks. For example, let's say your script has to read a file from a specific location. Using ``{{here}}`` turns path into absolute so you can ready it when using Jupyter, even if the script is in a different location than your ``pipeline.yaml``.
 
@@ -1001,7 +1061,7 @@ to override this behavior:
             data: product/data.csv
           params:
             # make this an absolute file so you can read it when opening
-            # scripts/my-script.py in tJupyter
+            # scripts/my-script.py in Jupyter
             input_path: '{{here}}/some/path/file.json'
 
 For more on parametrized pipelines, check out the guide: :doc:`../user-guide/parametrized`.

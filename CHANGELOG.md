@@ -1,12 +1,124 @@
 # CHANGELOG
 
-## 0.13.3dev
+## 0.16.2dev
+
+## 0.16.1 (2022-02-27)
+* Improves error message when `source` in a task spec is a string without an extension ([#619](https://github.com/ploomber/ploomber/issues/619))
+* Fixes error that caused `dag.render(force=True)` to download remote metadata
+* Simplify traceback when calling Ploomber task ([#605](https://github.com/ploomber/ploomber/issues/605))
+* Emitting warning when `resources_` points to large files ([#609](https://github.com/ploomber/ploomber/issues/609))
+* Adds auto-completion steps to documentation ([#612](https://github.com/ploomber/ploomber/issues/612))
+* Updates documentation to reflect new default format (`py:percent`) ([#564](https://github.com/ploomber/ploomber/issues/564))
+* Showing a mesage when a new version of Ploomber is available ([#558](https://github.com/ploomber/ploomber/issues/558))
+
+## 0.16 (2022-02-17)
+* Cleaner tracebacks when DAG fails to build or render
+* Automatically adding a parameters cell to scripts and notebooks if it's missing
+* `NotebookRunner` `static_analysis` behaves differently: it's less picky now, the old behavior default behavior can be turned on if passing `strict` , and can be turned off if passing `disable` ([#566](https://github.com/ploomber/ploomber/issues/566))
+* Improves many error messages for clarity
+* `ploomber install` installs dependencies in the current virtual environment by default
+* `ploomber install` works in systems where `python` links to Python 2.7 ([#435](https://github.com/ploomber/ploomber/issues/435))
+* `ploomber install` uses lock files by default if they exist
+* `ploomber install` has options to customize its behavior
+* `ploomber scaffold` accepts one positional argument ([#484](https://github.com/ploomber/ploomber/issues/484))
+* Fixes an issue that caused `ploomber nb` to hide traceback when failed to load pipeline ([#468](https://github.com/ploomber/ploomber/issues/468))
+
+
+## 0.15.3 (2022-02-13)
+* Fixed error when parsing cell magics with inline python
+
+## 0.15.2 (2022-02-11)
+* Fixed misspelling in `pygraphviz` error message ([#575](https://github.com/ploomber/ploomber/issues/575))
+
+## 0.15.1 (2022-02-08)
+* Sets minimum networkx version ([#536](https://github.com/ploomber/ploomber/issues/536))
+* Updates documentation links to the new domain ([#549](https://github.com/ploomber/ploomber/issues/549))
+* Suggests adding the appropriate `pygraphviz` version depending on the Python version ([#539](https://github.com/ploomber/ploomber/issues/539))
+* Improved error message when `pipeline.yaml` does not exist ([#517](https://github.com/ploomber/ploomber/issues/517))
+* Fixes error when scaffolding functions
+
+## 0.15 (2022-02-03)
+* Adds SQL runtime parameters
+* `SQLScript` and `SQLDump` display source code when `client.execute` fails
+* Clearer error message when `NotebookRunner` fails to initialize
+* `cli_endpoint` decorator hides traceback when raising `BaseException` errors
+* `DAGSpec` and `TaskSpec` errors raised as `DAGSpecInitializationError`
+* Less verbose `ploomber examples` output
+
+## 0.14.8 (2022-01-29)
+* Better user feedback after running `ploomber nb --inject`
+* Fixed `ploomber nb --inject` when `pipeline.yaml` has `.ipynb` files
+
+## 0.14.7 (2022-01-25)
+* Adds `ploomber nb --single-click/--single-click-disable` to enable/disable opening `.py` as notebooks with a click on Jupyter
+* `ploomber nb` no longer requires a valid entry point if the selected option doesn't need one
+* Better error message when `Pool` in the `Serial` executor raises `RuntimeError`
+* Notebook static analysis: Better support for IPython magics, support for inline shell (`! echo hi`). closes [#478](https://github.com/ploomber/ploomber/issues/478)
+
+## 0.14.6 (2022-01-20)
+* Documents `S3Client` and `GCloudStorageClient`
+* Updates to the telemetry module
+
+## 0.14.5 (2022-01-15)
+* Fixes error message when failing to load dotted paths
+* `ploomber scaffold` now supports `.R and .Rmd` files ([#476](https://github.com/ploomber/ploomber/issues/476))
+* Fixes an error that caused `ploomber scaffold` to ignore the location of existing packages ([#459](https://github.com/ploomber/ploomber/issues/459))
+* Better error message when running `ploomber execute/run` (suggests `ploomber build`)
+* Better error message when passing positional arguments to `ploomber build` (suggests `ploomber task`)
+
+## 0.14.4 (2022-01-07)
+* Fixes an error in the telemetry module
+
+## 0.14.3 (2022-01-06)
+* Improved [anonymous user statistics](https://docs.ploomber.io/en/latest/community/user-stats.html)
+
+## 0.14.2 (2022-01-03)
+* `PLOOMBER_STATS_ENABLED` environment variable can be used to disable stats
+* Improved error message when a dotted path fails to load ([#410](https://github.com/ploomber/ploomber/issues/410))
+
+## 0.14.1 (2022-01-02)
+* `ploomber scaffold` creates missing modules when adding functions ([#332](https://github.com/ploomber/ploomber/issues/332), @fferegrino)
+* `NotebookRunner` creates product's parent directories before running ([#460](https://github.com/ploomber/ploomber/issues/460))
+
+## 0.14 (2021-12-25)
+* Adds `ploomber nb` command for integration with VSCode, PyCharm, Spyder, etc.
+* Adds methods for saving and removing injected cells to `NotebookSource`
+* Adds methods for pairing and syncing to `NotebookSource`
+* Fixes [#448](https://github.com/ploomber/ploomber/issues/448): `SQLUpload` ignoring `io_handler`
+* Fixes [#447](https://github.com/ploomber/ploomber/issues/447): `pipeline.yaml` supports passing custom init parameters to `executor`
+* Adds optional [anonymous user statistics](https://docs.ploomber.io/en/latest/community/user-stats.html)
+
+## 0.13.7 (2021-12-18)
+* Fixes `{{root}}` expansion when path_to_here is different than the current working directory
+* Better error message when initializing `MetaProduct` with non-products
+* Adds refactoring section (`soorgeon`) to the user guide
+* Adds shell scripts user guide
+* `Commander` allows `jinja2.Environment` customization
+
+## 0.13.6 (2021-11-17)
+* `GenericSource` supports extracting upstream
+
+## 0.13.5 (2021-10-27)
+* Fixes an error that caused `copy.deepcopy` to fail on `SourceLoader`
+
+## 0.13.4 (2021-10-25)
+* Adds `{{now}}` (current timestamp in ISO 8601 format) to default placeholders
+* Adds `--output/-o` to `ploomber examples` to change output directory
+
+## 0.13.3 (2021-10-15)
+* Adds `--log-file/-F` option to CLI to log to a file
+* Clearer error message when a task in a `pipeline.yaml` has `grid` and `params`
+* Right bar highlighting fixed
+* `normalize_python` returns input if passed non-Python code
+* Better error message when requesting an unknown example in `ploomber examples`
+* Better error message when `ploomber examples` fails due to an unexpected error
+* Fixes an error in `ploomber examples` that caused the `--branch/-b` argument to be ignored
 
 ## 0.13.2 (2021-10-09)
 * Adds support for using `grid` and task-level hooks in spec API
 
 ## 0.13.1 (2021-10-08)
-* Allow serialization of a subset of params (#338)
+* Allow serialization of a subset of params ([#338](https://github.com/ploomber/ploomber/issues/338))
 * NotebookRunner `static_analysis` turned on by default
 * NotebookRunner `static_analysis` ignores IPython magics
 * Improved error message when NotebookRunner `static_analysis` fails
@@ -55,7 +167,7 @@
 ## 0.12.3 (2021-08-03)
 
 * Fixes cell injection when using the `--notebook-dir` during Jupyter initialization
-* Reduces verbosity in Jupyter logs (#314)
+* Reduces verbosity in Jupyter logs ([#314](https://github.com/ploomber/ploomber/issues/314))
 * Adds `tasks[*].params.resources_` to track changes in external files
 * Minor bug fixes
 
@@ -306,7 +418,7 @@
     NotebookSource
 - Improved output layout for tables
 - Support for nbconvert>=6
-- Docstrings are parsed from notebooks and displayed in DAG status table (#242)
+- Docstrings are parsed from notebooks and displayed in DAG status table ([#242](https://github.com/ploomber/ploomber/issues/242))
 - Jupyter extension now works for DAGs defined via directories (via
     `ENTRY_POINT` env variable)
 - Adds Jupyter integration guide to documentation
@@ -423,7 +535,7 @@
 
 ## 0.3.5 (2020-05-03)
 
-- Bug fixes #88, #89, #90, #84, #91
+- Bug fixes [#88](https://github.com/ploomber/ploomber/issues/88), [#89](https://github.com/ploomber/ploomber/issues/89), [#90](https://github.com/ploomber/ploomber/issues/90), [#84](https://github.com/ploomber/ploomber/issues/84), [#91](https://github.com/ploomber/ploomber/issues/91)
 - Modifies Env API: Env() is now Env.load(), Env.start() is now Env()
 - New advanced Env guide added to docs
 - Env can now be used with a context manager
@@ -435,7 +547,7 @@
 
 - Dependencies cleanup
 - Removed (numpydoc) as dependency, now optional
-- A few bug fixes: #79, #71
+- A few bug fixes: [#79](https://github.com/ploomber/ploomber/issues/79), [#71](https://github.com/ploomber/ploomber/issues/71)
 - All warnings are captured and shown at the end (Serial executor)
 - Moves differ parameter from DAG constructor to DAGConfigurator
 
@@ -509,7 +621,7 @@
 - Improved documentation
 - Renamed PostgresCopy to PostgresCopyFrom
 - SQLUpload and PostgresCopy have now the same API
-- A few fixes to PostgresCopy (#1, #2)
+- A few fixes to PostgresCopy ([#1](https://github.com/ploomber/ploomber/issues/1), [#2](https://github.com/ploomber/ploomber/issues/2))
 
 ## 0.1
 

@@ -123,19 +123,22 @@ def load_dotted_path(dotted_path, raise_=True, reload=False):
 
     if parsed:
         mod, name = parsed
-
+        main_mod = str(mod.split('.')[0])
         try:
             module = importlib.import_module(mod)
-        except ImportError as e:
+        except ModuleNotFoundError as e:
             if raise_:
-                # we want to raise ethe same error type but chaining exceptions
-                # produces a long verbose output, so we just modify the
-                # original message to add more context, it's ok to hide the
-                # original traceback since it will just point to lines
-                # in the importlib module, which isn't useful for the user
-                e.msg = ('An error happened when trying to '
-                         'import dotted path "{}": {}'.format(
-                             dotted_path, str(e)))
+                spec = importlib.util.find_spec(main_mod)
+
+                msg = ('An error occured when trying to import dotted '
+                       f'path {dotted_path!r}: {e}')
+
+                if spec is not None:
+                    msg = (msg +
+                           f' (loaded {main_mod!r} from {spec.origin!r})')
+
+                e.msg = msg
+
                 raise
 
         if module:
@@ -146,12 +149,9 @@ def load_dotted_path(dotted_path, raise_=True, reload=False):
                 obj = getattr(module, name)
             except AttributeError as e:
                 if raise_:
-                    # same as in the comment above
-                    e.args = (
-                        'Could not get "{}" from module '
-                        '"{}" (loaded from: {}), make sure it is a valid '
-                        'callable defined in such module'.format(
-                            name, mod, module.__file__), )
+                    e.args = ((f'Could not get {name!r} from module {mod!r} '
+                               f'(loaded {mod!r} from {module.__file__!r}). '
+                               'Ensure it is defined in such module'), )
                     raise
         return obj
     else:
@@ -221,6 +221,9 @@ def locate_dotted_path(dotted_path):
     """
     tokens = dotted_path.split('.')
     module = '.'.join(tokens[:-1])
+    # NOTE: if importing a sub-module (e.g., something.another), this will
+    # import some modules (rather than just locating them) - I think we
+    # should remove them to pervent import clashes
     spec = importlib.util.find_spec(module)
 
     if spec is None:
@@ -335,6 +338,13 @@ def lazily_locate_dotted_path(dotted_path):
                                   f'path {dotted_path!r}, '
                                   f'no module named {first!r}')
 
+    # python 3.6 returns 'namespace', python 3.7 an up returns None
+    if spec.origin is None or spec.origin == 'namespace':
+        raise ModuleNotFoundError('Error processing dotted '
+                                  f'path {dotted_path!r}: '
+                                  f'{first!r} appears to be a namespace '
+                                  'package, which are not supported')
+
     origin = Path(spec.origin)
     location = origin.parent
 
@@ -360,6 +370,13 @@ def lazily_locate_dotted_path(dotted_path):
         raise ModuleNotFoundError(f'No module named {module_name!r}. '
                                   f'Expected to find one of {str(init)!r} or '
                                   f'{str(file_)!r}, but none of those exist')
+
+
+def dotted_path_exists(dotted_path):
+    try:
+        return lazily_locate_dotted_path(dotted_path)
+    except (ModuleNotFoundError, AttributeError):
+        return False
 
 
 class BaseModel(pydantic.BaseModel):
@@ -400,3 +417,52 @@ class DottedPathSpecModel(BaseModel):
 
     def get_kwargs(self):
         return self.dict(exclude={'dotted_path'})
+
+
+def create_intermediate_modules(module_parts):
+    """
+    Creates the folder structure needed for a module specified
+    by the parts of its name
+
+    Parameters
+    ----------
+    module_parts : list
+        A list of strings with the module elements.
+        Example: ['module', 'sub_module']
+
+    Raises
+    ------
+    ValueError
+        If the module already exists
+    """
+    dotted_path_to_module = '.'.join(module_parts)
+    *inner, last = module_parts
+
+    # check if it already exists
+    if len(module_parts) >= 2:
+        fn_check = dotted_path_exists
+    else:
+        fn_check = importlib.util.find_spec
+
+    if fn_check(dotted_path_to_module):
+        raise ValueError(f'Module {dotted_path_to_module!r} already exists')
+
+    # if the root module already exists, we should create the missing files
+    # in the existing location
+    spec = importlib.util.find_spec(module_parts[0])
+
+    # .origin will be None for namespace packages
+    # on Python 3.6, spec.origin is 'namespace' instead of None
+    if spec and spec.origin is not None and spec.origin != 'namespace':
+        inner[0] = Path(spec.origin).parent
+
+    parent = Path(*inner)
+    parent.mkdir(parents=True, exist_ok=True)
+
+    for idx in range(len(inner)):
+        init_file = Path(*inner[:idx + 1], "__init__.py")
+
+        if not init_file.exists():
+            init_file.touch()
+
+    Path(parent, f"{last}.py").touch()

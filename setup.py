@@ -21,7 +21,7 @@ here = Path(__file__).parent.resolve()
 
 
 def read(name):
-    return Path(here, name).read_text()
+    return Path(here, name).read_text(encoding='utf-8')
 
 
 # NOTE: most users just do "pip install jupyter" but
@@ -69,7 +69,7 @@ TESTING = [
     'paramiko',
     # Upload to S3
     'boto3',
-    # testing uplaod to S3 task
+    # testing upload to S3 task
     'moto',
     # Upload to google cloud storage
     'google-cloud-storage',
@@ -98,20 +98,20 @@ TESTING = [
 ]
 
 # packages needed for development
-DEV = ['twine', 'invoke']
+DEV = ['twine', 'invoke', 'pkgmt']
 
 DESCRIPTION = (
-    'A convention over configuration workflow orchestrator. Develop locally '
-    '(Jupyter or your favorite editor), deploy to Airflow or Kubernetes. ')
+    'Write maintainable, production-ready pipelines using Jupyter or your '
+    'favorite text editor. Develop locally, deploy to the cloud.')
 
 setup(
     name='ploomber',
     version=VERSION,
     description=DESCRIPTION,
-    long_description=read('README.md') + '\n' + read('CHANGELOG.md'),
+    long_description=read('README.md'),
     long_description_content_type='text/markdown',
-    author='Eduardo Blancas',
-    author_email='hello@ploomber.io',
+    author='Ploomber',
+    author_email='contact@ploomber.io',
     url='https://github.com/ploomber/ploomber',
     packages=find_packages('src'),
     package_dir={'': 'src'},
@@ -139,18 +139,21 @@ setup(
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
     ],
     keywords=[
         # eg: 'keyword1', 'keyword2', 'keyword3',
     ],
     install_requires=[
-        'ploomber-scaffold',
+        'ploomber-scaffold>=0.3',
         'pyyaml',
-        'networkx',
+        'networkx>=2.5',
         'jinja2',
         'tabulate',
         'humanize',
         'tqdm',
+        'posthog',
+        'distro',
         'importlib_resources;python_version<"3.7"',
         # for code normalization, parso is also needed for inferring upstream
         # dependencies in jupyter notebooks
@@ -165,7 +168,7 @@ setup(
         # for cli
         'click',
         # for ploomber interact and {PythonCallable, NotebookRunner}.debug()
-        'ipython',
+        'ipython<8',
         'ipdb',
         'pydantic',
     ] + NB,

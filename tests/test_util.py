@@ -51,14 +51,6 @@ def test_add_to_sys_path_with_exception():
     assert path not in sys.path
 
 
-def test_load_dotted_path_custom_error_message():
-    with pytest.raises(AttributeError) as excinfo:
-        dotted_path.load_dotted_path('test_pkg.not_a_function')
-
-    assert ('Could not get "not_a_function" from module "test_pkg"'
-            in str(excinfo.value))
-
-
 def test_load_dotted_path_with_reload(tmp_directory, add_current_to_sys_path):
     # write a sample module
     Path('dotted_path_with_reload.py').write_text("""
@@ -93,31 +85,37 @@ def test_chdir_code(tmp_directory):
     [
         [
             dict(pkgs=['p1']),
-            'p1 is required to use fn. Install it by running "pip install p1"'
+            "'p1' is required to use 'fn'. Install with: pip install 'p1'"
         ],
         [
             dict(pkgs=['p1'], name='name'),
-            ('p1 is required to use name. Install it by running '
-             '"pip install p1"')
+            ("'p1' is required to use 'name'. Install with: "
+             "pip install 'p1'")
         ],
         [
-            dict(pkgs=['p1'], extra_msg='extra'),
-            ('p1 is required to use fn. Install it by running '
-             '"pip install p1". extra')
+            dict(pkgs=['p1'], extra_msg='Some extra message'),
+            ("'p1' is required to use 'fn'. Install with: "
+             "pip install 'p1'\nSome extra message")
         ],
         [
             dict(pkgs=['p1', 'p2']),
-            ('p1 p2 are required to use fn. Install them by running '
-             '"pip install p1 p2"')
+            ("'p1' 'p2' are required to use 'fn'. Install with: "
+             "pip install 'p1' 'p2'")
         ],
         [
             dict(pkgs=['p1'], pip_names=['n1']),
-            'n1 is required to use fn. Install it by running "pip install n1"'
+            "'n1' is required to use 'fn'. Install with: pip install 'n1'"
+        ],
+        [
+            # pinning some specific version (this may happen if user is
+            # running and old python version)
+            dict(pkgs=['p1'], pip_names=['n1<2']),
+            "'n1<2' is required to use 'fn'. Install with: pip install 'n1<2'"
         ],
         [
             # the first package is installed, it shouldn't appear in the error
             dict(pkgs=['ploomber', 'p1']),
-            'p1 is required to use fn. Install it by running "pip install p1"'
+            "'p1' is required to use 'fn'. Install with: pip install 'p1'"
         ],
     ])
 def test_requires(params, expected):

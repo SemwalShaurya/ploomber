@@ -83,12 +83,13 @@ is implemented by OnlineDAG, which takes a partial definition
 predictions using ``OnlineDAG().predict()``. See ``OnlineDAG`` documentation
 for details.
 """
+import click
 import fnmatch
 import os
 import yaml
 import logging
 from pathlib import Path
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Mapping
 from glob import iglob
 from itertools import chain
 import pprint
@@ -102,7 +103,8 @@ from ploomber.spec.taskspec import TaskSpec, suffix2taskclass
 from ploomber.util import validate
 from ploomber.util import default
 from ploomber.dag.dagconfiguration import DAGConfiguration
-from ploomber.exceptions import DAGSpecInitializationError
+from ploomber.exceptions import (DAGSpecInitializationError,
+                                 MissingParametersCellError)
 from ploomber.env.envdict import EnvDict
 from ploomber.env.expand import (expand_raw_dictionary_and_extract_tags,
                                  expand_raw_dictionaries_and_extract_tags)
@@ -111,6 +113,8 @@ from ploomber.tasks.taskgroup import TaskGroup
 from ploomber.validators.string import (validate_product_class_name,
                                         validate_task_class_name)
 from ploomber.executors import Parallel
+from ploomber.io import pretty_print
+from ploomber.sources import notebooksource
 
 logger = logging.getLogger(__name__)
 pp = pprint.PrettyPrinter(indent=4)
@@ -225,8 +229,11 @@ class DAGSpec(MutableMapping):
 
             try:
                 data = yaml.safe_load(content)
-            except (yaml.parser.ParserError,
-                    yaml.constructor.ConstructorError) as e:
+            except (
+                    yaml.parser.ParserError,
+                    yaml.constructor.ConstructorError,
+                    yaml.scanner.ScannerError,
+            ) as e:
                 error = e
             else:
                 error = None
@@ -241,7 +248,9 @@ class DAGSpec(MutableMapping):
                         'parser error:\n\n'
                         f'{error}')
                 else:
-                    raise error
+                    raise DAGSpecInitializationError(
+                        'Failed to initialize spec. Got invalid YAML'
+                    ) from error
 
         # initialized with a dictionary...
         else:
@@ -261,10 +270,11 @@ class DAGSpec(MutableMapping):
             self.data = {'tasks': self.data}
 
         if self.data.get('tasks') and not isinstance(self.data['tasks'], list):
-            raise TypeError(
-                'Expected \'tasks\' to contain a list, but got: '
-                f'{self.data["tasks"]!r} '
-                f'(an object of type {type(self.data["tasks"]).__name__!r})')
+            raise DAGSpecInitializationError(
+                'Expected \'tasks\' in the dag spec to contain a '
+                f'list, but got: {self.data["tasks"]} '
+                '(an object with '
+                f'type: {type(self.data["tasks"]).__name__!r})')
 
         # validate keys defined at the top (nested keys are not validated here)
         self._validate_top_keys(self.data, self._path)
@@ -337,6 +347,10 @@ class DAGSpec(MutableMapping):
                               'environment but '
                               f'unused in the spec: {extra}')
 
+            if self.data['tasks'] is None:
+                raise DAGSpecInitializationError(
+                    'Failed to initialize spec, "tasks" section is empty')
+
             self.data['tasks'] = [
                 normalize_task(task) for task in self.data['tasks']
             ]
@@ -370,14 +384,16 @@ class DAGSpec(MutableMapping):
         """Validate keys at the top of the spec
         """
         if 'tasks' not in spec and 'location' not in spec:
-            path_ = f'(file: "{path}")' if self._parent_path else ''
-            raise KeyError('Invalid data to initialize DAGSpec, missing '
-                           f'key "tasks" {path_}')
+            raise DAGSpecInitializationError(
+                'Failed to initialize spec. Missing "tasks" key')
 
         if 'location' in spec:
             if len(spec) > 1:
-                raise KeyError('If specifying dag through a "location" key '
-                               'it must be the unique key in the spec')
+                raise DAGSpecInitializationError(
+                    'Failed to initialize spec. If '
+                    'using the "location" key there should not '
+                    'be other keys')
+
         else:
             valid = {
                 'meta',
@@ -439,15 +455,20 @@ class DAGSpec(MutableMapping):
             dag._params = DAGConfiguration.from_dict(self['config'])
 
         if 'executor' in self:
-            valid = {'serial', 'parallel'}
             executor = self['executor']
 
-            if executor not in valid:
-                raise ValueError('executor must be one '
-                                 f'of {valid}, got: {executor}')
-
-            if executor == 'parallel':
-                dag.executor = Parallel()
+            if isinstance(executor,
+                          str) and executor in {'serial', 'parallel'}:
+                if executor == 'parallel':
+                    dag.executor = Parallel()
+            elif isinstance(executor, Mapping):
+                dag.executor = dotted_path.DottedPath(
+                    executor, lazy_load=False, allow_return_none=False)()
+            else:
+                raise DAGSpecInitializationError(
+                    '"executor" must be '
+                    '"serial", "parallel", or a dotted path'
+                    f', got: {executor!r}')
 
         clients = self.get('clients')
 
@@ -736,7 +757,22 @@ def process_tasks(dag, dag_spec, root_path=None):
         # init source to extract product
         fn = task_dict['class']._init_source
         kwargs = {'kwargs': {}, **task_dict}
-        source = call_with_dictionary(fn, kwargs=kwargs)
+
+        try:
+            source = call_with_dictionary(fn, kwargs=kwargs)
+        except MissingParametersCellError:
+            missing_params = True
+        else:
+            missing_params = False
+
+        if missing_params:
+            click.secho(
+                f'{kwargs["source"]} is missing the parameters cell, '
+                'adding it at the top of the file...',
+                fg='yellow')
+            notebooksource.add_parameters_cell(kwargs['source'], extract_up,
+                                               extract_prod)
+            source = call_with_dictionary(fn, kwargs=kwargs)
 
         if extract_prod:
             task_dict['product'] = source.extract_product()
@@ -762,8 +798,13 @@ def process_tasks(dag, dag_spec, root_path=None):
     # expand upstream dependencies (in case there are any wildcards)
     for task in tasks:
         if extract_up:
-            upstream[task] = _expand_upstream(task.source.extract_upstream(),
-                                              task_names)
+            try:
+                extracted = task.source.extract_upstream()
+            except Exception as e:
+                raise DAGSpecInitializationError(
+                    f'Failed to initialize task {task.name!r}') from e
+
+            upstream[task] = _expand_upstream(extracted, task_names)
         else:
             upstream[task] = _expand_upstream(upstream_raw[task], task_names)
 
@@ -774,14 +815,17 @@ def process_tasks(dag, dag_spec, root_path=None):
     for task in tasks:
         if upstream[task]:
             for task_name, group_name in upstream[task].items():
-                try:
-                    up = dag[task_name]
-                except KeyError:
+
+                up = dag.get(task_name)
+
+                if up is None:
                     names = [t.name for t in tasks]
-                    raise KeyError('Error processing spec. Extracted '
-                                   'a reference to a task with name '
-                                   f'{task_name!r}, but a task with such name '
-                                   f'doesn\'t exist. Loaded tasks: {names}')
+                    raise DAGSpecInitializationError(
+                        f'Task {task.name!r} '
+                        'has an upstream dependency '
+                        f'{task_name!r}, but such task '
+                        'doesn\'t exist. Available tasks: '
+                        f'{pretty_print.iterable(names)}')
 
                 task.set_upstream(up, group_name=group_name)
 

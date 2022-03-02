@@ -2,10 +2,10 @@ Jupyter integration
 ===================
 
 .. note::
-    
-    If you're new to Ploomber, check out the
-    :doc:`../get-started/basic-concepts` guide, this tutorial assumes you're
-    already familiar with Ploomber's core concepts.
+
+    This guide is applicable if running JupyterLab ``>=2.x``. If running older
+    versions or using other editors (such as VSCode or PyCharm), check out
+    the :doc:`../user-guide/editors` guide.
 
 Ploomber integrates with Jupyter to make it easy to create multi-stage
 pipelines composed of small notebooks. Breaking down logic in multiple
@@ -15,7 +15,7 @@ and deploy.
 Before executing scripts or notebooks, Ploomber injects a new cell that
 replaces the ``upstream`` variable at the top of the notebook (which only
 contains dependency names) with a dictionary that maps these names to their
-corresponding output files so you can use them as inputs in the current task.
+corresponding output files to use as inputs in the current task.
 
 For example if a Python script (``task.py``) declares the following dependency:
 
@@ -57,9 +57,15 @@ you to develop pipelines interactively.
     notebooks. If using ``jupyter lab``: ``Right-click`` -> ``Open With``
     -> ``Notebook`` as depicted below:
 
-.. image:: https://ploomber.io/doc/lab-open-with-notebook.png
-   :target: https://ploomber.io/doc/lab-open-with-notebook.png
+.. image:: https://ploomber.io/images/doc/lab-open-with-notebook.png
+   :target: https://ploomber.io/images/doc/lab-open-with-notebook.png
    :alt: lab-open-with-notebook
+
+.. note::
+
+   If you want to configure JuptyerLab to open ``.py`` files as notebooks with a
+   single click, see the
+   :ref:`corresponding section <opening-files-as-notebooks-with-a-single-click>`.
 
 
 .. important::
@@ -125,8 +131,8 @@ execution dependency.
 
 To inject the cell, reload the file from disk:
 
-.. image:: https://ploomber.io/doc/lab-reload-file.png
-   :target: https://ploomber.io/doc/lab-reload-file.png
+.. image:: https://ploomber.io/images/doc/lab-reload-file.png
+   :target: https://ploomber.io/images/doc/lab-reload-file.png
    :alt: lab-reload-file
 
 
@@ -208,7 +214,6 @@ Activating the Jupyter extension
 
 In most cases, the extension configures when you install Ploomber; you can verify this by running:
 
-
 .. code-block:: console
 
     jupyter serverextension list
@@ -228,6 +233,18 @@ To disable it:
     jupyter serverextension disable ploomber
 
 
+.. important::
+
+    If you want to use the extension in a hosted environment
+    (JupyterHub, Domino, SageMaker, etc.), ensure Ploomber is installed
+    **before** JupyterLab spins up. Usually, hosted platforms allow you to write
+    a custom start script: add a ``pip install ploomber`` line, and you'll be
+    ready to go. If you cannot get the extension to work, post a question
+    in the ``#ask-anything`` channel on
+    `Slack <https://ploomber.io/community>`_. Alternatively, you may replicate
+    the extension's functionality using the command line, check out the
+    :doc:`this guide <editors>` to learn more.
+
 Custom Jupyter pipeline loading
 -------------------------------
 
@@ -241,12 +258,20 @@ environment variable. For example, to load a ``pipeline.serve.yaml``:
 
 .. code-block:: console
 
-    export ENTRY_POINT=pipeline.serve.yaml && jupyter lab
+    export ENTRY_POINT=pipeline.serve.yaml
+    jupyter lab
+
+
+.. important::
+    
+    ``export ENTRY_POINT`` must be executed in the same process that spins up
+    JupyterLab. If you change it, you'll need to start JupyterLab again
 
 
 Note that ``ENTRY_POINT`` must be a file name and not a path. When you start
 Jupyter, Ploomber will look for that file in the current and parent directories
 until it finds one.
+
 
 .. _troubleshooting-pipeline-loading:
 
@@ -306,12 +331,12 @@ the same conditions when initializing your pipeline for cell injection.
 Detecting changes
 -----------------
 
-To detect changes to your pipeline, Ploomber has to parse it whenever you open
-a file. The parsing runtime depends on the number of tasks, and although it is
+Ploomber parses your pipeline whenever you open a file to detect changes.
+The parsing runtime depends on the number of tasks, and although it is
 fast, it may slow down file loading in pipelines with lots of tasks. You can
 turn off continuous parsing by setting ``jupyter_hot_reload`` (in the ``meta``
 section) option to ``False``. You'll have to restart Jupyter if you turn this
-option off for changes to be detected.
+option off to detect changes.
 
 Managing multiple pipelines
 ---------------------------
@@ -339,7 +364,7 @@ as tasks in their corresponding ``pipeline.yaml``.
 
 .. important::
     
-    If you're using Python functions as tasks, you must use different module
+    If using Python functions as tasks, you must use different module
     names for each pipeline. Otherwise, the module imports first will be cached
     and used for the other pipeline. See the following example.
 
@@ -377,7 +402,7 @@ There are two ways to use Ploomber in Jupyter. The first one is by opening a
 task file in Jupyter (i.e., the source file is listed in your ``pipeline.yaml``
 file.
 
-A second way is to load your pipeline in Jupyter to interact with it. This second
+Another way is to load your pipeline in Jupyter to interact with it. This second
 approach is best when you already have some tasks, and you want to explore their
 outputs to decide how to proceed with further analysis.
 
@@ -429,3 +454,30 @@ build next and understand dependencies among tasks.
 
 If you want to take a quick look at your pipeline, you may use
 ``ploomber interact`` from a terminal to get the ``dag`` object.
+
+.. _opening-files-as-notebooks-with-a-single-click:
+
+Opening ``.py`` files as notebooks with a single click
+-------------------------------------------------------
+
+It is now possible to open ``.py`` files as notebooks in ``JuptyerLab`` with a
+single click (this requires ``jupytext>=1.13.2``).
+
+If using ``ploomber>=0.14.7``, you can enable this with the following command:
+
+.. code-block:: console
+
+    ploomber nb --single-click
+
+
+To disable:
+
+.. code-block:: console
+
+    ploomber nb --single-click-disable
+
+
+If running earlier versions of Ploomber, you can enable this by changing the
+default viewer for text notebooks. For instructions,
+`see jupytext's documentation <https://jupytext.readthedocs.io/en/latest/index.html#install>`_
+(click on the triangle right before the ``With a click on the text file in JupyterLab`` section).

@@ -32,8 +32,13 @@ jobs:
     - name: Install dependencies
       shell: bash -l {0}
       run: |
+
         eval "$(conda shell.bash hook)"
         conda activate conda-env
+
+        # make the build fail quickly on flake8 errors
+        pip install flake8
+        flake8
 
         # there's a bug in jupyter, we need to install this first
         conda install pywin32
@@ -72,6 +77,8 @@ jobs:
         pip install --editable tests/assets/test_pkg
 
     - name: Run tests
+      env:
+        PLOOMBER_STATS_ENABLED: false
       shell: bash -l {0}
       run: |
         eval "$(conda shell.bash hook)"

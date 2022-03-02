@@ -76,6 +76,8 @@ Clients
     DBAPIClient
     SQLAlchemyClient
     ShellClient
+    S3Client
+    GCloudStorageClient
 
 
 Spec
@@ -114,6 +116,18 @@ Serialization
     serializer_pickle
     unserializer
     unserializer_pickle
+
+
+Executors
+---------
+
+.. currentmodule:: ploomber.executors
+
+.. autosummary::
+    :toctree: _modules/executors
+
+    Serial
+    Parallel
 
 
 SourceLoader

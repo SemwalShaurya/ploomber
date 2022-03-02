@@ -7,6 +7,7 @@ from copy import deepcopy, copy
 from collections.abc import Mapping, Iterable
 from pathlib import Path
 from functools import reduce
+import datetime
 
 from jinja2 import Template, StrictUndefined
 
@@ -239,7 +240,8 @@ class EnvironmentExpander:
         return str(Path(os.getcwd()).resolve())
 
     def get_root(self):
-        root = default.try_to_find_root_recursively()
+        root = default.try_to_find_root_recursively(
+            starting_dir=self._path_to_here)
 
         if root is None:
             raise ValueError('Failed to expand {{root}}, could not '
@@ -262,6 +264,11 @@ class EnvironmentExpander:
             raise KeyError('_module key is required to use git placeholder')
 
         return repo.get_git_info(module)['git_location']
+
+    def get_now(self):
+        """Returns current timestamp in ISO 8601 format
+        """
+        return datetime.datetime.now().isoformat()
 
 
 def iterate_nested_dict(d):

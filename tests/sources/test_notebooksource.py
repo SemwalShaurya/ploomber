@@ -1,14 +1,19 @@
 from pathlib import Path
 
+import yaml
 import pytest
 import jupytext
 import nbformat
 from jupyter_client.kernelspec import NoSuchKernel
 
+from ploomber.spec import DAGSpec
 from ploomber.tasks._params import Params
 from ploomber.sources.notebooksource import (NotebookSource, is_python,
                                              inject_cell,
-                                             determine_kernel_name)
+                                             determine_kernel_name,
+                                             _cleanup_rendered_nb,
+                                             add_parameters_cell, _to_nb_obj)
+from ploomber.sources.nb_utils import find_cell_with_tag
 from ploomber.products import File
 from ploomber.exceptions import RenderError, SourceInitializationError
 
@@ -78,6 +83,16 @@ def nb_R_meta():
     nb = nbformat.v4.new_notebook()
     nb.metadata = {'kernelspec': {'language': 'R'}}
     return nb
+
+
+def get_injected_cell(nb):
+    injected = None
+
+    for cell in nb['cells']:
+        if 'injected-parameters' in cell['metadata'].get('tags', []):
+            injected = cell
+
+    return injected
 
 
 notebook_ab = """
@@ -182,6 +197,43 @@ def test_skip_kernelspec_install_check():
                    check_if_kernel_installed=False)
 
 
+def test_error_if_missing_source_file():
+    with pytest.raises(SourceInitializationError) as excinfo:
+        NotebookSource(Path('some.py'))
+
+    assert 'File does not exist' in str(excinfo.value)
+
+
+def test_error_if_missing_source_file_suggest_scaffold(tmp_directory):
+    Path('pipeline.yaml').touch()
+
+    with pytest.raises(SourceInitializationError) as excinfo:
+        NotebookSource(Path('some.py'))
+
+    assert 'File does not exist' in str(excinfo.value)
+    assert 'ploomber scaffold' in str(excinfo.value)
+
+
+def test_error_if_source_is_dir(tmp_directory):
+    Path('some.py').mkdir()
+
+    with pytest.raises(SourceInitializationError) as excinfo:
+        NotebookSource(Path('some.py'))
+
+    assert 'Expected a file, got a directory' in str(excinfo.value)
+
+
+def test_error_if_source_is_dir_suggest_scaffold(tmp_directory):
+    Path('some.py').mkdir()
+    Path('pipeline.yaml').touch()
+
+    with pytest.raises(SourceInitializationError) as excinfo:
+        NotebookSource(Path('some.py'))
+
+    assert 'Expected a file, got a directory' in str(excinfo.value)
+    assert 'ploomber scaffold' in str(excinfo.value)
+
+
 def test_error_if_parameters_cell_doesnt_exist():
     with pytest.raises(SourceInitializationError) as excinfo:
         NotebookSource(new_nb(fmt='ipynb', add_tag=False), ext_in='ipynb')
@@ -254,11 +306,11 @@ def test_static_analysis(hot_reload, tmp_directory):
     source.render(params)
 
 
-def test_error_if_missing_params():
+def test_error_if_strict_and_missing_params():
     source = NotebookSource(notebook_ab,
                             ext_in='py',
                             kernelspec_name='python3',
-                            static_analysis=True)
+                            static_analysis='strict')
 
     params = Params._from_dict({'product': File('output.ipynb'), 'a': 1})
 
@@ -268,11 +320,11 @@ def test_error_if_missing_params():
     assert "Missing params: 'b'" in str(excinfo.value)
 
 
-def test_error_if_passing_undeclared_parameter():
+def test_error_if_strict_and_passing_undeclared_parameter():
     source = NotebookSource(notebook_ab,
                             ext_in='py',
                             kernelspec_name='python3',
-                            static_analysis=True)
+                            static_analysis='strict')
 
     params = Params._from_dict({
         'product': File('output.ipynb'),
@@ -287,7 +339,7 @@ def test_error_if_passing_undeclared_parameter():
     assert "Unexpected params: 'c'" in str(excinfo.value)
 
 
-def test_error_if_using_undeclared_variable():
+def test_error_if_strict_and_using_undeclared_variable():
     notebook_w_warning = """
 # + tags=['parameters']
 a = 1
@@ -300,7 +352,7 @@ a + b + c
     source = NotebookSource(notebook_w_warning,
                             ext_in='py',
                             kernelspec_name='python3',
-                            static_analysis=True)
+                            static_analysis='strict')
 
     params = Params._from_dict({
         'product': File('output.ipynb'),
@@ -314,7 +366,7 @@ a + b + c
     assert "undefined name 'c'" in str(excinfo.value)
 
 
-def test_error_if_syntax_error():
+def test_error_if_strict_and_syntax_error():
     notebook_w_error = """
 # + tags=['parameters']
 a = 1
@@ -326,7 +378,7 @@ if
     source = NotebookSource(notebook_w_error,
                             ext_in='py',
                             kernelspec_name='python3',
-                            static_analysis=True)
+                            static_analysis='strict')
 
     params = Params._from_dict({
         'product': File('output.ipynb'),
@@ -340,7 +392,7 @@ if
     assert 'invalid syntax\n\nif\n\n  ^\n' in str(excinfo.value)
 
 
-def test_error_if_undefined_name():
+def test_error_if_strict_and_undefined_name():
     notebook_w_error = """
 # + tags=['parameters']
 
@@ -350,7 +402,7 @@ df.head()
     source = NotebookSource(notebook_w_error,
                             ext_in='py',
                             kernelspec_name='python3',
-                            static_analysis=True)
+                            static_analysis='strict')
 
     params = Params._from_dict({'product': File('output.ipynb')})
 
@@ -478,6 +530,19 @@ def test_str():
     assert str(source) == ('\na = 1\nb = 2\nproduct = None\na + b')
 
 
+def test_str_ignores_injected_cell(tmp_directory):
+    path = Path('nb.py')
+    path.write_text(notebook_ab)
+    source = NotebookSource(path)
+    source.render(Params._from_dict(dict(a=42, product=File('file.txt'))))
+    source.save_injected_cell()
+
+    source = NotebookSource(path)
+
+    # injected cell should not be considered part of the source code
+    assert 'a = 42' not in str(source)
+
+
 def test_repr_from_path(tmp_directory):
     path = Path(tmp_directory, 'nb.py')
     Path('nb.py').write_text(notebook_ab)
@@ -508,3 +573,276 @@ def test_determine_kernel_name_from_ext(tmp_directory):
                                  kernelspec_name=None,
                                  ext='py',
                                  language=None) == 'python3'
+
+
+def test_save_injected_cell(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    nb = jupytext.read('load.py')
+    expected = '# + tags=["injected-parameters"]'
+
+    assert expected not in Path('load.py').read_text()
+    assert nb.metadata.get('ploomber') is None
+
+    dag['load'].source.save_injected_cell()
+    nb = jupytext.read('load.py')
+
+    assert expected in Path('load.py').read_text()
+    assert nb.metadata.ploomber.injected_manually
+
+
+def test_save_injected_cell_ipynb(tmp_nbs):
+    # modify the spec so it has one ipynb task
+    with open('pipeline.yaml') as f:
+        spec = yaml.safe_load(f)
+
+    spec['tasks'][0]['source'] = 'load.ipynb'
+    Path('pipeline.yaml').write_text(yaml.dump(spec))
+
+    # generate notebook in ipynb format
+    jupytext.write(jupytext.read('load.py'), 'load.ipynb')
+
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    nb = jupytext.read('load.py')
+    expected = '"injected-parameters"'
+
+    assert expected not in Path('load.ipynb').read_text()
+    assert nb.metadata.get('ploomber') is None
+
+    dag['load'].source.save_injected_cell()
+    nb = jupytext.read('load.ipynb')
+
+    assert expected in Path('load.ipynb').read_text()
+    assert nb.metadata.ploomber.injected_manually
+
+
+@pytest.mark.parametrize('prefix', [
+    'nbs',
+    'some/notebooks',
+])
+def test_save_injected_cell_in_paired_notebooks(tmp_nbs, prefix):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.pair(prefix)
+
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.save_injected_cell()
+
+    assert get_injected_cell(jupytext.read(Path(prefix, 'load.ipynb')))
+    assert get_injected_cell(jupytext.read(Path('load.py')))
+
+
+def test_remove_injected_cell(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.save_injected_cell()
+    expected = '# + tags=["injected-parameters"]'
+
+    assert expected in Path('load.py').read_text()
+
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.remove_injected_cell()
+
+    nb = jupytext.read('load.py')
+
+    assert expected not in Path('load.py').read_text()
+    assert nb.metadata.ploomber == {}
+
+
+@pytest.mark.parametrize('prefix', [
+    'nbs',
+    'some/notebooks',
+])
+def test_remove_injected_cell_in_paired_notebooks(tmp_nbs, prefix):
+    # pair notebooks
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.pair(prefix)
+
+    # inject cell
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.save_injected_cell()
+
+    # remove cell
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.remove_injected_cell()
+
+    assert not get_injected_cell(jupytext.read(Path(prefix, 'load.ipynb')))
+    assert not get_injected_cell(jupytext.read(Path('load.py')))
+
+
+def test_format(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+
+    assert '# + tags=["parameters"]' in Path('load.py').read_text()
+
+    dag['load'].source.format(fmt='py:percent')
+
+    assert '# %% tags=["parameters"]' in Path('load.py').read_text()
+
+
+def test_format_with_extension_change(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.format(fmt='ipynb')
+
+    assert not Path('load.py').exists()
+    assert jupytext.read('load.ipynb')
+
+
+def test_pair(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+
+    dag['load'].source.pair(base_path='nbs')
+    nb = jupytext.reads(Path('load.py').read_text(), fmt='py:light')
+
+    assert Path('nbs', 'load.ipynb').is_file()
+    assert nb.metadata.jupytext.formats == 'nbs//ipynb,py:light'
+
+
+def test_sync(tmp_nbs):
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.pair(base_path='nbs')
+
+    nb = jupytext.reads(Path('load.py').read_text(), fmt='py:light')
+    nb.cells.append(nbformat.v4.new_code_cell(source='x = 42'))
+    jupytext.write(nb, 'load.py', fmt='py:light')
+
+    dag = DAGSpec('pipeline.yaml').to_dag().render()
+    dag['load'].source.sync()
+
+    nb = jupytext.reads(Path('nbs', 'load.ipynb').read_text(), fmt='ipynb')
+
+    assert nb.cells[-1]['source'] == 'x = 42'
+
+
+@pytest.mark.parametrize('method, kwargs', [
+    ['save_injected_cell', {}],
+    ['remove_injected_cell', {}],
+    ['format', {
+        'fmt': 'py:light'
+    }],
+    ['pair', {
+        'base_path': 'nbs'
+    }],
+    ['sync', {}],
+])
+def test_error_message_when_initialized_from_str(tmp_nbs, method, kwargs):
+    source = NotebookSource("""
+# + tags=["parameters"]
+""", ext_in='py')
+
+    source.render(Params._from_dict({'product': File('file.ipynb')}))
+
+    with pytest.raises(ValueError) as excinfo:
+        getattr(source, method)(**kwargs)
+
+    expected = (f"Cannot use '{method}' if notebook was not "
+                "initialized from a file")
+    assert str(excinfo.value) == expected
+
+
+remove_one = """# %% tags=["parameters"]
+x = 1
+
+# %% tags=["injected-parameters"]
+x = 2
+"""
+
+remove_two = """# %% tags=["parameters"]
+x = 100
+
+# %% tags=["injected-parameters"]
+x = 2
+
+# %% tags=["debugging-settings"]
+x = 3
+"""
+
+remove_all = """# %% tags=["injected-parameters"]
+x = 2
+
+# %% tags=["debugging-settings"]
+x = 3
+"""
+
+
+@pytest.mark.parametrize('nb, expected_n, expected_source', [
+    [remove_one, 1, ['x = 1']],
+    [remove_two, 1, ['x = 100']],
+    [remove_all, 0, []],
+])
+def test_cleanup_rendered_nb(nb, expected_n, expected_source):
+    out = _cleanup_rendered_nb(jupytext.reads(nb))
+
+    assert len(out['cells']) == expected_n
+    assert [c['source'] for c in out['cells']] == expected_source
+
+
+@pytest.mark.parametrize(
+    'code, name, extract_product, extract_upstream, expected, expected_fmt', [
+        ['', 'file.py', False, False, '', 'light'],
+        ['', 'file.py', True, False, 'product = None', 'light'],
+        ['', 'file.py', False, True, 'upstream = None', 'light'],
+        [
+            nbformat.writes(nbformat.v4.new_notebook()),
+            'file.ipynb',
+            False,
+            False,
+            '',
+            'ipynb',
+        ],
+        [
+            nbformat.writes(nbformat.v4.new_notebook()),
+            'file.ipynb',
+            False,
+            True,
+            'upstream = None',
+            'ipynb',
+        ],
+        [
+            '# %%\n1+1\n\n# %%\n2+2',
+            'file.py',
+            False,
+            True,
+            'upstream = None',
+            'percent',
+        ],
+    ])
+def test_add_parameters_cell(tmp_directory, code, name, extract_product,
+                             extract_upstream, expected, expected_fmt):
+    path = Path(name)
+    path.write_text(code)
+    nb_old = jupytext.read(path)
+
+    add_parameters_cell(name,
+                        extract_product=extract_product,
+                        extract_upstream=extract_upstream)
+
+    nb_new = jupytext.read(path)
+    cell, idx = find_cell_with_tag(nb_new, 'parameters')
+
+    # adds the cell at the top
+    assert idx == 0
+
+    # only adds one cell
+    assert len(nb_old.cells) + 1 == len(nb_new.cells)
+
+    # expected source content
+    assert expected in cell['source']
+
+    # keeps the same format
+    fmt, _ = (('ipynb', None) if path.suffix == '.ipynb' else
+              jupytext.guess_format(path.read_text(), ext=path.suffix))
+    assert fmt == expected_fmt
+
+
+@pytest.mark.parametrize('error, kwargs', [
+    ['Failed to read notebook', dict()],
+    ["Failed to read notebook from 'nb.ipynb'",
+     dict(path='nb.ipynb')],
+])
+def test_to_nb_obj_error_if_corrupted_json(error, kwargs):
+
+    with pytest.raises(SourceInitializationError) as excinfo:
+        _to_nb_obj('', language='python', ext='ipynb', **kwargs)
+
+    assert error in str(excinfo.value)
+    repr_ = str(excinfo.getrepr())
+    assert 'Notebook does not appear to be JSON' in repr_
+    assert 'Expecting value: line 1 column 1 (char 0)' in repr_

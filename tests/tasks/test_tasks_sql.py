@@ -1,11 +1,15 @@
+import string
+import json
 from sqlite3 import connect
 from pathlib import Path
 from unittest.mock import Mock
 
 from ploomber import DAG
-from ploomber.tasks import SQLDump, SQLTransfer, SQLScript
+from ploomber.tasks import SQLDump, SQLTransfer, SQLScript, PythonCallable
 from ploomber.products import File, SQLiteRelation
 from ploomber.clients import SQLAlchemyClient, DBAPIClient
+from ploomber.executors import Serial
+from ploomber.exceptions import DAGBuildError
 from ploomber import io
 
 import pytest
@@ -115,6 +119,36 @@ def test_can_dump_sqlite_to_csv(tmp_directory):
     assert dump.equals(db)
 
 
+def test_sqldump_with_dbapiclient(tmp_directory):
+    client = DBAPIClient(connect, dict(database='my_db.db'))
+
+    # make some data and save it in the db
+    con_raw = connect(database='my_db.db')
+    df = pd.DataFrame({'a': np.arange(0, 100), 'b': np.arange(100, 200)})
+    df.to_sql('numbers', con_raw)
+
+    # create the task and run it
+    dag = DAG()
+    SQLDump('SELECT * FROM numbers',
+            File('dump.csv'),
+            dag,
+            name='dump',
+            client=client,
+            chunksize=None,
+            io_handler=io.CSVIO)
+
+    dag.build()
+
+    # load dumped data and data from the db
+    dump = pd.read_csv('dump.csv')
+    db = pd.read_sql_query('SELECT * FROM numbers', con_raw)
+
+    client.close()
+    con_raw.close()
+
+    assert dump.equals(db)
+
+
 def test_can_dump_sqlite_to_parquet(tmp_directory):
     tmp = Path(tmp_directory)
 
@@ -150,6 +184,115 @@ def test_can_dump_sqlite_to_parquet(tmp_directory):
 
     # make sure they are the same
     assert dump.equals(db)
+
+
+def test_sql_runtime_params(tmp_directory):
+    tmp = Path(tmp_directory)
+
+    # create a db
+    conn = connect(str(tmp / "database.db"))
+    client = SQLAlchemyClient('sqlite:///{}'.format(tmp / "database.db"))
+
+    # make some data and save it in the db
+    df = pd.DataFrame({
+        'number': range(10),
+        'char': list(string.ascii_letters[:10])
+    })
+    df.to_sql('data', conn)
+
+    # create the task and run it
+    dag = DAG(executor=Serial(build_in_subprocess=False))
+
+    t1 = SQLDump('SELECT * FROM data',
+                 File('data.parquet'),
+                 dag,
+                 name='data',
+                 client=client,
+                 chunksize=None,
+                 io_handler=io.ParquetIO)
+
+    def select(product, upstream):
+        numbers = list(pd.read_parquet(upstream['data']).number)
+        numbers_selected = [n for n in numbers if n % 2 == 0]
+
+        chars = list(pd.read_parquet(upstream['data']).char)
+        chars_selected = [repr(c) for i, c in enumerate(chars) if i % 2 == 0]
+
+        Path(product).write_text(
+            json.dumps(dict(numbers=numbers_selected, chars=chars_selected)))
+
+    t2 = PythonCallable(select, File('selected.json'), dag, name='selected')
+
+    t3 = SQLDump("""
+    SELECT * FROM data WHERE number
+    NOT IN ([[get_key(upstream["selected"], "numbers") | join(", ") ]])
+""",
+                 File('numbers.parquet'),
+                 dag,
+                 name='numbers',
+                 client=client,
+                 chunksize=None,
+                 io_handler=io.ParquetIO)
+
+    t4 = SQLDump("""
+    SELECT * FROM data WHERE char
+    NOT IN ([[get_key(upstream["selected"], "chars") | join(", ") ]])
+""",
+                 File('chars.parquet'),
+                 dag,
+                 name='chars',
+                 client=client,
+                 chunksize=None,
+                 io_handler=io.ParquetIO)
+
+    t1 >> t2 >> t3
+    t2 >> t4
+
+    dag.build()
+
+    assert list(pd.read_parquet('numbers.parquet').number) == [1, 3, 5, 7, 9]
+    assert list(
+        pd.read_parquet('chars.parquet').char) == ['b', 'd', 'f', 'h', 'j']
+
+
+def test_sql_dump_shows_executed_code_if_fails(tmp_directory):
+    tmp = Path(tmp_directory)
+
+    client = SQLAlchemyClient('sqlite:///{}'.format(tmp / "database.db"))
+
+    dag = DAG()
+
+    SQLDump('SOME INVALID SQL',
+            File('data.parquet'),
+            dag,
+            name='data',
+            client=client)
+
+    with pytest.raises(DAGBuildError) as excinfo:
+        dag.build()
+
+    assert 'SOME INVALID SQL' in str(excinfo.value)
+    assert 'near "SOME": syntax error' in str(excinfo.value)
+
+
+def test_sql_script_shows_executed_code_if_fails(tmp_directory, sample_data):
+
+    dag = DAG()
+
+    client = SQLAlchemyClient('sqlite:///database.db')
+    dag.clients[SQLScript] = client
+    dag.clients[SQLiteRelation] = client
+
+    SQLScript('SOME INVALID SQL {{product}}',
+              SQLiteRelation((None, 'another', 'table')),
+              dag=dag,
+              name='task')
+
+    with pytest.raises(DAGBuildError) as excinfo:
+        dag.build()
+
+    assert 'SOME INVALID SQL' in str(excinfo.value)
+    assert 'near "SOME": syntax error' in str(excinfo.value)
 
 
 def test_can_dump_postgres(tmp_directory, pg_client_and_schema):

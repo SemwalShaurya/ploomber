@@ -12,7 +12,10 @@ from collections import defaultdict
 import click
 
 from ploomber.io.terminalwriter import TerminalWriter
+from ploomber.cli.io import command_endpoint
 from ploomber.table import Table
+from ploomber.telemetry import telemetry
+from ploomber.exceptions import BaseException
 
 from pygments.formatters.terminal import TerminalFormatter
 from pygments.lexers.markup import MarkdownLexer
@@ -24,6 +27,29 @@ _home = Path('~', '.ploomber')
 
 _lexer = MarkdownLexer()
 _formatter = TerminalFormatter(bg="dark")
+
+
+def _find_header(md):
+    """Find header markers
+    """
+    mark = '<!-- end header -->'
+    lines = md.splitlines()
+
+    for n, line in enumerate(lines):
+        if mark == line:
+            return n
+
+    return None
+
+
+def _skip_header(md):
+    line = _find_header(md)
+
+    if line:
+        lines = md.splitlines()
+        return '\n'.join(lines[line + 1:])
+    else:
+        return md
 
 
 def _delete_git_repo(path):
@@ -39,44 +65,30 @@ def _delete_git_repo(path):
                 os.chmod(Path(root, file_), stat.S_IRWXU)
 
 
-def _display_markdown(source):
-    if isinstance(source, Path):
-        source = source.read_text()
+def _delete(source, sub):
+    return source.replace(sub, '')
+
+
+def _cleanup_markdown(source):
+    source = _delete(source, '<!-- start description -->\n')
+    source = _delete(source, '<!-- end description -->\n')
+    source = _skip_header(source)
+    return source
+
+
+def _display_markdown(tw, path):
+    LINES = 10
+
+    source = _cleanup_markdown(path.read_text())
 
     lines = source.splitlines()
 
-    top_lines = '\n'.join(lines[:25])
+    top_lines = '\n'.join(lines[:LINES])
 
-    if len(lines) > 25:
-        top_lines += '\n\n[...continues]'
+    tw.write(highlight(top_lines, _lexer, _formatter))
 
-    click.echo(highlight(top_lines, _lexer, _formatter))
-
-
-def _list_examples(path):
-    with open(path / 'index.csv', newline='', encoding='utf-8-sig') as f:
-        rows = list(csv.DictReader(f))
-
-    by_type = defaultdict(lambda: [])
-
-    for row in rows:
-        type_ = row.pop('type')
-        del row['entry']
-        by_type[type_].append(row)
-
-    tw = TerminalWriter()
-
-    tw.sep('=', 'Ploomber examples', blue=True)
-
-    for type_ in ['basic', 'intermediate', 'advanced']:
-        tw.sep(' ', type_.capitalize(), green=True)
-        print(Table.from_dicts(by_type[type_]).to_format('simple'))
-
-    tw.sep('=', blue=True)
-
-    tw.write('\nTo run these examples in a hosted '
-             f'environment, see instructions at: {_URL}')
-    tw.write('\nTo get the source code: ploomber examples -n {name}\n\n')
+    if len(lines) > LINES:
+        tw.write(f'\n[...{str(path)} continues]\n', yellow=True)
 
 
 class _ExamplesManager:
@@ -87,6 +99,7 @@ class _ExamplesManager:
         self._path_to_metadata = self._home / '.metadata'
         self._examples = self._home / 'projects'
         self._branch = branch or _DEFAULT_BRANCH
+        self._explicit_branch = branch is not None
 
     @property
     def home(self):
@@ -104,9 +117,9 @@ class _ExamplesManager:
     def branch(self):
         return self._branch
 
-    def save_metadata(self):
+    def save_metadata(self, branch):
         timestamp = datetime.now().timestamp()
-        metadata = json.dumps(dict(timestamp=timestamp))
+        metadata = json.dumps(dict(timestamp=timestamp, branch=branch))
         self.path_to_metadata.write_text(metadata)
 
     def load_metadata(self):
@@ -144,10 +157,10 @@ class _ExamplesManager:
         if exception:
             raise RuntimeError(
                 'An error occurred when downloading examples. '
-                'Verify git is installed and internet '
+                'Verify git is installed and your internet '
                 f'connection. (Error message: {str(exception)!r})')
 
-        self.save_metadata()
+        self.save_metadata(branch=self.branch)
 
     def outdated(self):
         metadata = self.load_metadata()
@@ -157,12 +170,18 @@ class _ExamplesManager:
             then = datetime.fromtimestamp(timestamp)
             now = datetime.now()
             elapsed = (now - then).days
-            is_outdated = elapsed >= 1
+            is_more_than_one_day_old = elapsed >= 1
 
-            if is_outdated:
-                click.echo('Examples copy is more than 1 day old. Cloning...')
+            is_different_branch = metadata.get('branch') != self.branch
 
-            return is_outdated
+            if is_more_than_one_day_old:
+                click.echo('Examples copy is more than 1 day old...')
+
+            if is_different_branch and self._explicit_branch:
+                click.echo('Different branch requested...')
+
+            return is_more_than_one_day_old or (is_different_branch
+                                                and self._explicit_branch)
         else:
             click.echo('Cloning...')
             return True
@@ -173,45 +192,98 @@ class _ExamplesManager:
     def path_to_readme(self):
         return self.examples / 'README.md'
 
+    def list(self):
+        with open(self.examples / '_index.csv',
+                  newline='',
+                  encoding='utf-8-sig') as f:
+            rows = list(csv.DictReader(f))
 
-def main(name, force=False, branch=None):
+        categories = json.loads((self.examples / '_category.json').read_text())
+
+        by_category = defaultdict(lambda: [])
+
+        for row in rows:
+            category = row.pop('category')
+            del row['idx']
+            by_category[category].append(row)
+
+        tw = TerminalWriter()
+
+        click.echo(f'Branch: {self.branch}')
+        tw.sep('=', 'Ploomber examples', blue=True)
+        click.echo()
+
+        for category in sorted(by_category):
+            title = category.capitalize()
+            description = categories.get(category)
+
+            if description:
+                title = f'{title} ({description})'
+
+            tw.sep(' ', title, green=True)
+            click.echo()
+            click.echo(
+                Table.from_dicts(by_category[category]).to_format('simple'))
+            click.echo()
+
+        tw.sep('=', blue=True)
+
+        tw.write('\nTo run these examples in free, hosted '
+                 f'environment, see instructions at: {_URL}')
+        tw.write('\nTo download: ploomber examples -n name -o path\n')
+        tw.write('Example: ploomber examples -n templates/ml-basic -o ml\n')
+
+
+@command_endpoint
+@telemetry.log_call('examples')
+def main(name, force=False, branch=None, output=None):
+    """
+    Entry point for examples
+    """
     manager = _ExamplesManager(home=_home, branch=branch)
     tw = TerminalWriter()
 
     if not manager.examples.exists() or manager.outdated() or force:
+        if not manager.examples.exists():
+            click.echo('Local copy does not exist...')
+        elif force:
+            click.echo('Forcing download...')
+
         manager.clone()
 
     if not name:
-        _list_examples(manager.examples)
+        manager.list()
     else:
         selected = manager.path_to(name)
 
         if not selected.exists():
-            click.echo(f'There is no example named {name!r}. '
-                       'To get available examples: ploomber examples')
+            raise BaseException(
+                f'There is no example named {name!r}.\n'
+                'List examples: ploomber examples\n'
+                'Update local copy: ploomber examples -f\n'
+                'Get ML example: ploomber examples -n '
+                'templates/ml-basic -o ml-example',
+                type_='no-example-with-name')
         else:
-            click.echo(f'Copying example to {name}/')
+            output = output or name
 
-            if Path(name).exists():
-                raise click.ClickException(
-                    f"{name!r} already exists in the current working "
+            tw.sep('=', f'Copying example {name} to {output}/', blue=True)
+
+            if Path(output).exists():
+                raise BaseException(
+                    f"{output!r} already exists in the current working "
                     "directory, please rename it or move it "
-                    "to another location and try again.")
+                    "to another location and try again.",
+                    type_='directory-exists')
 
-            shutil.copytree(selected, name)
+            shutil.copytree(selected, output)
 
-            path_to_readme = Path(name, 'README.md')
-            path_to_req = Path(name, 'requirements.txt')
-            path_to_env = Path(name, 'environment.yml')
-            name_dir = name + ('\\' if platform.system() == 'Windows' else '/')
+            path_to_readme = Path(output, 'README.md')
+            out_dir = output + ('\\'
+                                if platform.system() == 'Windows' else '/')
 
-            tw.sep('=', str(path_to_readme), blue=True)
-            _display_markdown(path_to_readme)
-            tw.sep('=', blue=True)
-            tw.write(
-                f'Done.\n\nTo install dependencies, use any of the following: '
-                f'\n  1. Move to {name_dir} and run "ploomber install"'
-                f'\n  2. conda env create -f {path_to_env}'
-                f'\n  3. pip install -r {path_to_req}'
-                f'\n\nCheck out {path_to_readme} for more details.\n',
-                green=True)
+            tw.write('Next steps:\n\n'
+                     f'$ cd {out_dir}'
+                     f'\n$ ploomber install')
+            tw.write(f'\n\nOpen {str(path_to_readme)} for details.\n',
+                     blue=True)

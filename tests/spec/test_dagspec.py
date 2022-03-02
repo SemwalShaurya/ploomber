@@ -28,6 +28,8 @@ from ploomber.tasks import SQLScript
 from ploomber import exceptions
 from ploomber.executors import Serial, Parallel
 from ploomber.products import MetaProduct
+from ploomber.exceptions import DAGSpecInitializationError, ValidationError
+from ploomber.sources.nb_utils import find_cell_with_tag
 
 
 def create_engine_with_schema(schema):
@@ -144,18 +146,30 @@ def test_init_with_missing_file(tmp_directory):
     assert 'Expected it to be a path to a YAML file' in str(excinfo.value)
 
 
+def test_error_if_tasks_is_none():
+
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
+        DAGSpec({'tasks': None})
+
+    expected = 'Failed to initialize spec, "tasks" section is empty'
+    assert str(excinfo.value) == expected
+
+
 def test_error_if_missing_tasks_key():
-    with pytest.raises(KeyError):
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         DAGSpec({'some_key': None})
+
+    expected = 'Failed to initialize spec. Missing "tasks" key'
+    assert str(excinfo.value) == expected
 
 
 def test_validate_top_level_keys():
-    with pytest.raises(KeyError):
+    with pytest.raises(ValidationError):
         DAGSpec({'tasks': [], 'invalid_key': None})
 
 
 def test_validate_meta_keys():
-    with pytest.raises(KeyError):
+    with pytest.raises(ValidationError):
         DAGSpec({'tasks': [], 'meta': {'invalid_key': None}})
 
 
@@ -231,6 +245,22 @@ def test_custom_serializer(executor, expected):
     assert isinstance(dag.executor, expected)
 
 
+def test_custom_serializer_dotted_path():
+    dag = DAGSpec({
+        'tasks': [{
+            'source': 'test_pkg.callables.root',
+            'product': 'root.csv'
+        }],
+        'executor': {
+            'dotted_path': 'ploomber.executors.Serial',
+            'build_in_subprocess': False
+        },
+    }).to_dag()
+
+    assert isinstance(dag.executor, Serial)
+    assert not dag.executor._build_in_subprocess
+
+
 @pytest.mark.parametrize('processor', [
     to_ipynb, tasks_list, remove_task_class, extract_upstream, extract_product
 ])
@@ -286,7 +316,7 @@ def test_doesnt_load_env_in_default_location_if_loading_from_dict(tmp_nbs):
         d = yaml.safe_load(f)
 
     spec = DAGSpec(d)
-    assert set(spec.env) == {'user', 'cwd', 'root'}
+    assert set(spec.env) == {'user', 'cwd', 'root', 'now'}
 
 
 def test_notebook_spec_w_location(tmp_nbs, add_current_to_sys_path):
@@ -751,6 +781,9 @@ def test_expand_built_in_placeholders(tmp_directory, monkeypatch):
         return 'username'
 
     monkeypatch.setattr(expand.getpass, "getuser", mockreturn)
+    mock = Mock()
+    mock.datetime.now().isoformat.return_value = 'current-timestamp'
+    monkeypatch.setattr(expand, "datetime", mock)
 
     spec_dict = {
         'meta': {
@@ -762,6 +795,9 @@ def test_expand_built_in_placeholders(tmp_directory, monkeypatch):
                 'nb': str(Path('{{cwd}}', '{{user}}', 'nb.html')),
                 'data': str(Path('{{here}}', 'data.csv')),
             },
+            'params': {
+                'now': '{{now}}'
+            }
         }]
     }
 
@@ -770,11 +806,13 @@ def test_expand_built_in_placeholders(tmp_directory, monkeypatch):
     os.chdir(Path('src', 'pkg'))
 
     spec = DAGSpec.find()
+    task = spec.data['tasks'][0]
 
-    assert spec.data['tasks'][0]['source'] == Path(tmp_directory, 'script.py')
-    assert spec.data['tasks'][0]['product']['nb'] == str(
+    assert task['params']['now'] == 'current-timestamp'
+    assert task['source'] == Path(tmp_directory, 'script.py')
+    assert task['product']['nb'] == str(
         Path(tmp_directory, 'src', 'pkg', 'username', 'nb.html'))
-    assert spec.data['tasks'][0]['product']['data'] == str(
+    assert task['product']['data'] == str(
         Path(tmp_directory, 'src', 'pkg', 'data.csv'))
 
 
@@ -911,13 +949,38 @@ def get_client():
 
 @pytest.mark.parametrize('lazy_import', [False, True])
 def test_spec_with_functions(lazy_import, backup_spec_with_functions,
-                             add_current_to_sys_path):
+                             add_current_to_sys_path, no_sys_modules_cache):
     """
     Check we can create pipeline where the task is a function defined in a
     local file
     """
     spec = DAGSpec('pipeline.yaml', lazy_import=lazy_import)
     spec.to_dag().build()
+
+
+@pytest.mark.parametrize('lazy_import', [False, True])
+def test_spec_with_functions_fails(lazy_import,
+                                   backup_spec_with_functions_no_sources,
+                                   add_current_to_sys_path,
+                                   no_sys_modules_cache):
+    """
+    Check we can create pipeline where the task is a function defined in a
+    local file but the sources do not exist. Since it is trying to load the
+    source scripts thanks to lazy_import being bool, it should fail (True
+    imports the function, while False does not but it checks that it exists)
+    """
+    with pytest.raises(exceptions.DAGSpecInitializationError):
+        DAGSpec('pipeline.yaml', lazy_import=lazy_import)
+
+
+def test_spec_with_sourceless_functions(backup_spec_with_functions_no_sources,
+                                        add_current_to_sys_path,
+                                        no_sys_modules_cache):
+    """
+    Check we can create pipeline where the task is a function defined in a
+    deep hierarchical structure where the source does not exists
+    """
+    assert DAGSpec('pipeline.yaml', lazy_import='skip')
 
 
 def test_spec_with_location(tmp_directory):
@@ -930,11 +993,12 @@ def test_spec_with_location_error_if_meta(tmp_directory):
     Path('pipeline.yaml').write_text(
         'location: some.factory.function\nmeta: {some: key}')
 
-    with pytest.raises(KeyError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         DAGSpec('pipeline.yaml')
 
-    assert ('If specifying dag through a "location" key it must be '
-            'the unique key in the spec') in str(excinfo.value)
+    expected = ('Failed to initialize spec. If using the "location" key '
+                'there should not be other keys')
+    assert expected == str(excinfo.value)
 
 
 def test_to_dag_does_not_mutate_spec(tmp_nbs):
@@ -1143,10 +1207,11 @@ def test_find_searches_in_default_locations(monkeypatch, tmp_nbs, root_path):
 def test_error_invalid_yaml_displays_error_line(tmp_directory):
     Path('pipeline.yaml').write_text('key: [')
 
-    with pytest.raises(yaml.parser.ParserError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         DAGSpec('pipeline.yaml')
 
-    assert 'key: [' in str(excinfo.value)
+    assert 'Failed to initialize spec. Got invalid YAML' in str(excinfo.value)
+    assert 'key: [' in str(excinfo.getrepr())
 
 
 @pytest.mark.parametrize('content', [
@@ -1320,7 +1385,10 @@ def test_doesnt_warn_if_param_declared_in_env_is_used_in_spec():
             },
             env=dict(a=1))
 
-    assert not record
+    message = ("The following placeholders are declared in the "
+               "environment but unused in the spec")
+
+    assert not any(message in str(r.message) for r in record)
 
 
 def test_doesnt_warn_if_param_is_used_in_import_task_from(tmp_directory):
@@ -1705,11 +1773,12 @@ tasks:
     not_a_list: value
 """)
 
-    with pytest.raises(TypeError) as excinfo:
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
         DAGSpec('pipeline.yaml')
 
-    expected = ("Expected 'tasks' to contain a list, but got: "
-                "{'not_a_list': 'value'} (an object of type 'dict')")
+    expected = (
+        "Expected 'tasks' in the dag spec to contain a "
+        "list, but got: {'not_a_list': 'value'} (an object with type: 'dict')")
     assert str(excinfo.value) == expected
 
 
@@ -1772,3 +1841,57 @@ tasks:
 
     assert spec['tasks'][0]['params']['a_param'] == literal
     assert dag['function'].params['a_param'] == literal
+
+
+def test_error_when_missing_upstream_in_notebook(tmp_directory):
+    Path('script.py').write_text("""
+# + tags=["parameters"]
+something = None
+""")
+
+    Path('pipeline.yaml').write_text("""
+tasks:
+    - source: script.py
+      product: output.ipynb
+""")
+
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
+        DAGSpec('pipeline.yaml').to_dag()
+
+    repr_ = str(excinfo.getrepr())
+    assert "Failed to initialize task 'script'" in repr_
+    assert "Could not parse a valid 'upstream' variable" in repr_
+
+
+def test_error_when_invalid_yaml(tmp_directory):
+    Path('pipeline.yaml').write_text("""
+tasks: []
+-
+""")
+
+    with pytest.raises(DAGSpecInitializationError) as excinfo:
+        DAGSpec('pipeline.yaml').to_dag()
+
+    repr_ = str(excinfo.getrepr())
+    assert "Failed to initialize spec. Got invalid YAML" in repr_
+    assert "while parsing a block mapping" in repr_
+
+
+def test_adds_parameters_cell_if_missing(tmp_directory, capsys):
+    path = Path('script.py')
+    path.touch()
+
+    Path('pipeline.yaml').write_text("""
+tasks:
+    - source: script.py
+      product: output.ipynb
+""")
+
+    DAGSpec('pipeline.yaml').to_dag()
+
+    cell, idx = find_cell_with_tag(jupytext.read(path), 'parameters')
+
+    captured = capsys.readouterr()
+    assert "script.py is missing the parameters cell" in captured.out
+    assert cell
+    assert idx == 0
